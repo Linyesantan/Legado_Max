@@ -1,5 +1,9 @@
 package io.legado.app.ui.book.read
 
+import io.legado.app.ui.book.read.ReadBookActivity
+import io.legado.app.ui.book.read.config.HighlightRule
+import io.legado.app.ui.book.read.config.HighlightRuleEditDialog
+import io.legado.app.utils.postEvent
 import android.annotation.SuppressLint
 import android.app.SearchManager
 import android.content.Context
@@ -338,48 +342,63 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
      * @param item 被点击的菜单项
      */
     private fun onMenuItemSelected(item: MenuItemImpl) {
-        when (item.itemId) {
-            // 复制文本到剪贴板
-            R.id.menu_copy -> context.sendToClip(callBack.selectedText)
-            
-            // 分享文本
-            R.id.menu_share_str -> context.share(callBack.selectedText)
-            
-            // 使用浏览器打开或搜索
-            R.id.menu_browser -> {
-                kotlin.runCatching {
-                    val intent = if (callBack.selectedText.isAbsUrl()) {
-                        // 如果是URL，直接打开
-                        Intent(Intent.ACTION_VIEW).apply {
-                            data = Uri.parse(callBack.selectedText)
-                        }
-                    } else {
-                        // 否则使用搜索引擎搜索
-                        Intent(Intent.ACTION_WEB_SEARCH).apply {
-                            putExtra(SearchManager.QUERY, callBack.selectedText)
-                        }
+    when (item.itemId) {
+        // 复制文本到剪贴板
+        R.id.menu_copy -> context.sendToClip(callBack.selectedText)
+        
+        // 分享文本
+        R.id.menu_share_str -> context.share(callBack.selectedText)
+        
+        // 使用浏览器打开或搜索
+        R.id.menu_browser -> {
+            kotlin.runCatching {
+                val intent = if (callBack.selectedText.isAbsUrl()) {
+                    Intent(Intent.ACTION_VIEW).apply {
+                        data = Uri.parse(callBack.selectedText)
                     }
-                    context.startActivity(intent)
-                }.onFailure {
-                    it.printOnDebug()
-                    context.toastOnUi(it.localizedMessage ?: "ERROR")
+                } else {
+                    Intent(Intent.ACTION_WEB_SEARCH).apply {
+                        putExtra(SearchManager.QUERY, callBack.selectedText)
+                    }
                 }
+                context.startActivity(intent)
+            }.onFailure {
+                it.printOnDebug()
+                context.toastOnUi(it.localizedMessage ?: "ERROR")
             }
+        }
 
-            // 其他菜单项：系统文本处理菜单（Android 6.0+）
-            else -> item.intent?.let {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    kotlin.runCatching {
-                        // 将选中的文本传递给目标应用
-                        it.putExtra(Intent.EXTRA_PROCESS_TEXT, callBack.selectedText)
-                        context.startActivity(it)
-                    }.onFailure { e ->
-                        AppLog.put("执行文本菜单操作出错\n$e", e, true)
-                    }
+        // 高亮：打开新增高亮规则页面，自动填入选中的文本
+        R.id.menu_highlight -> {
+            val activity = context as? ReadBookActivity
+            if (activity == null) {
+                context.toastOnUi("无法打开高亮设置")
+                return
+            }
+            val selectedText = callBack.selectedText
+            val newRule = HighlightRule().apply {
+                pattern = selectedText
+                name = selectedText.take(30)
+            }
+            HighlightRuleEditDialog(newRule, null) { savedRule ->
+                activity.postEvent(EventBus.UP_CONFIG, arrayListOf(5))
+                activity.toastOnUi("高亮规则已添加: ${savedRule.name}")
+            }.show(activity.supportFragmentManager, "highlightRuleEdit")
+        }
+
+        // 其他菜单项：系统文本处理菜单（Android 6.0+）
+        else -> item.intent?.let {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                kotlin.runCatching {
+                    it.putExtra(Intent.EXTRA_PROCESS_TEXT, callBack.selectedText)
+                    context.startActivity(it)
+                }.onFailure { e ->
+                    AppLog.put("执行文本菜单操作出错\n$e", e, true)
                 }
             }
         }
     }
+}
 
     @RequiresApi(Build.VERSION_CODES.M)
     private fun createProcessTextIntent(): Intent {
