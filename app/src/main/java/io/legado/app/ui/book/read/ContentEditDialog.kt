@@ -85,7 +85,7 @@ class ContentEditDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
             configureManuscriptMenu()
             binding.contentView.post {
                 binding.contentView.apply {
-                    val lineIndex = layout.getLineForOffset(ReadBook.durChapterPos.coerceIn(0, text.length))
+                    val lineIndex = layout.getLineForOffset(ReadBook.durChapterPos.coerceIn(0, text?.length ?: 0))
                     val lineHeight = layout.getLineTop(lineIndex)
                     scrollTo(0, lineHeight)
                 }
