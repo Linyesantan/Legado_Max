@@ -19,6 +19,10 @@ import io.legado.app.base.BaseDialogFragment
 import io.legado.app.base.BaseViewModel
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.BookChapter
+import io.legado.app.data.entities.Book
+import io.legado.app.model.localBook.NovelRoundtrip
+import io.legado.app.utils.share
+import io.legado.app.utils.toastOnUi
 import io.legado.app.databinding.DialogContentEditBinding
 import io.legado.app.databinding.DialogEditTextBinding
 import io.legado.app.help.book.BookHelp
@@ -60,6 +64,7 @@ class ContentEditDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
         binding.toolBar.title = ReadBook.curTextChapter?.title
         initMenu()
         binding.toolBar.setOnClickListener {
+            if (viewModel.manuscriptRaw != null) return@setOnClickListener
             lifecycleScope.launch {
                 val book = ReadBook.book ?: return@launch
                 val chapter = withContext(IO) {
@@ -77,9 +82,10 @@ class ContentEditDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
         }
         viewModel.initContent {
             binding.contentView.setText(it)
+            configureManuscriptMenu()
             binding.contentView.post {
                 binding.contentView.apply {
-                    val lineIndex = layout.getLineForOffset(ReadBook.durChapterPos)
+                    val lineIndex = layout.getLineForOffset(ReadBook.durChapterPos.coerceIn(0, text.length))
                     val lineHeight = layout.getLineTop(lineIndex)
                     scrollTo(0, lineHeight)
                 }
@@ -89,14 +95,21 @@ class ContentEditDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
 
     private fun initMenu() {
         binding.toolBar.inflateMenu(R.menu.content_edit)
+        binding.toolBar.menu.findItem(R.id.menu_save).isEnabled = false
         binding.toolBar.menu.applyTint(requireContext())
         binding.toolBar.setOnMenuItemClickListener {
             when (it.itemId) {
                 R.id.menu_search -> toggleSearchPanel()
                 R.id.menu_save -> {
-                    save()
-                    dismiss()
+                    if (viewModel.manuscriptRaw != null) {
+                        saveManuscript(false)
+                    } else {
+                        save()
+                        dismiss()
+                    }
                 }
+                R.id.menu_share_manuscript -> saveManuscript(true)
+                R.id.menu_discard_manuscript -> dismiss()
                 R.id.menu_reset -> viewModel.initContent(true) { content ->
                     binding.contentView.setText(content)
                     originalContent = null
@@ -108,6 +121,48 @@ class ContentEditDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
             return@setOnMenuItemClickListener true
         }
         initSearchPanel()
+    }
+
+    private fun configureManuscriptMenu() {
+        binding.toolBar.menu.findItem(R.id.menu_save).isEnabled = true
+        val manuscript = viewModel.manuscriptRaw != null
+        // 原搜索框会在关闭时恢复旧 Spannable，专用改稿禁用该有损路径。
+        binding.toolBar.menu.findItem(R.id.menu_search).isVisible = !manuscript
+        binding.toolBar.menu.findItem(R.id.menu_reset).isVisible = !manuscript
+        binding.toolBar.menu.findItem(R.id.menu_share_manuscript).isVisible = manuscript
+        binding.toolBar.menu.findItem(R.id.menu_discard_manuscript).isVisible = manuscript
+        if (manuscript) {
+            isCancelable = false
+            binding.toolBar.subtitle = "原文改稿 · 保存后用菜单分享 TXT"
+        }
+    }
+
+    private fun saveManuscript(share: Boolean) {
+        val book = viewModel.manuscriptBook ?: return
+        val chapter = viewModel.manuscriptChapter ?: return
+        val expected = viewModel.manuscriptRaw ?: return
+        val body = binding.contentView.text?.toString() ?: return
+        val context = requireContext()
+        binding.toolBar.menu.findItem(R.id.menu_save).isEnabled = false
+        binding.toolBar.menu.findItem(R.id.menu_share_manuscript).isEnabled = false
+        lifecycleScope.launch {
+            try {
+                val file = withContext(IO) {
+                    NovelRoundtrip.save(book, chapter, expected, body)
+                    viewModel.manuscriptRaw = expected.substringBefore('\n') + "\n" + body
+                    if (share) NovelRoundtrip.shareFile(book) else null
+                }
+                ReadBook.loadContent(chapter.index, resetPageOffset = false)
+                if (file != null) context.share(file, "text/plain") else dismiss()
+            } catch (e: Exception) {
+                context.toastOnUi("改稿保存失败：${e.localizedMessage}")
+            } finally {
+                if (view != null) {
+                    binding.toolBar.menu.findItem(R.id.menu_save).isEnabled = true
+                    binding.toolBar.menu.findItem(R.id.menu_share_manuscript).isEnabled = true
+                }
+            }
+        }
     }
 
     private fun toggleSearchPanel() {
@@ -256,7 +311,7 @@ class ContentEditDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
 
     override fun onCancel(dialog: DialogInterface) {
         super.onCancel(dialog)
-        save()
+        if (viewModel.manuscriptRaw == null) save()
     }
 
     private fun save() {
@@ -274,6 +329,9 @@ class ContentEditDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
     class ContentEditViewModel(application: Application) : BaseViewModel(application) {
         val loadStateLiveData = MutableLiveData<Boolean>()
         var content: String? = null
+        var manuscriptRaw: String? = null
+        var manuscriptBook: Book? = null
+        var manuscriptChapter: BookChapter? = null
 
         fun initContent(reset: Boolean = false, success: (String) -> Unit) {
             execute {
@@ -281,6 +339,14 @@ class ContentEditDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
                 val chapter = appDb.bookChapterDao
                     .getChapter(book.bookUrl, ReadBook.durChapterIndex)
                     ?: return@execute null
+                if (chapter.url.startsWith("novel-roundtrip:")) {
+                    val doc = NovelRoundtrip.load(book) ?: error("改稿文件丢失")
+                    val entry = NovelRoundtrip.chapter(doc, chapter)
+                    manuscriptRaw = entry.raw
+                    manuscriptBook = book
+                    manuscriptChapter = chapter
+                    return@execute entry.body
+                }
                 if (reset) {
                     content = null
                     BookHelp.delContent(book, chapter)

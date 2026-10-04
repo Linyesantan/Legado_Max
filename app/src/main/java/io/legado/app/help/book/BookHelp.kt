@@ -433,6 +433,12 @@ object BookHelp {
      * 读取章节内容
      */
     fun getContent(book: Book, bookChapter: BookChapter): String? {
+        if (bookChapter.url.startsWith("novel-roundtrip:")) {
+            val doc = io.legado.app.model.localBook.NovelRoundtrip.load(book)
+                ?: error("改稿文件丢失")
+            val chapter = io.legado.app.model.localBook.NovelRoundtrip.chapter(doc, bookChapter)
+            return chapter.title + "\n" + chapter.body
+        }
         val file = downloadDir.getFile(
             cacheFolderName,
             book.getFolderName(),
