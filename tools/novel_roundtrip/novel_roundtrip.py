@@ -398,7 +398,9 @@ def main():
     a = ap.parse_args()
     try:
         s = Store(a.project, a.state)
-        with s.locked():
+        # 查询只读取已提交记录，连未完成事务的正文恢复也留给写入类命令。
+        manager = contextlib.nullcontext() if a.cmd in ('changes', 'history') else s.locked()
+        with manager:
             if a.cmd == 'export':
                 r = s.export()
             elif a.cmd in ('import', 'check'):
@@ -410,7 +412,12 @@ def main():
             else:
                 r = s.undo(a.id)
         if a.cmd == 'export' and a.send_qq:
-            run = subprocess.run([sys.executable, str(Path.home()/'.local/bin/qq-send-file.py'), r['file'], '--c2c'], capture_output=True, text=True)
+            owner_file = Path.home()/'.config/novel-roundtrip/qq-owner'
+            if not owner_file.is_file() or not owner_file.read_text().strip():
+                raise Rejected('请先配置 ~/.config/novel-roundtrip/qq-owner，避免发给错误联系人')
+            run = subprocess.run([sys.executable, str(Path.home()/'.local/bin/qq-send-file.py'),
+                                  r['file'], '--c2c', '--openid', owner_file.read_text().strip()],
+                                 capture_output=True, text=True)
             r['qq_sent'] = run.returncode == 0
             if run.returncode:
                 r['qq_error'] = run.stdout + run.stderr
