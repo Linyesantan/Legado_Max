@@ -122,11 +122,11 @@ class RoundtripTests(unittest.TestCase):
         self.assertEqual(self.original['第0001章-开始.md'], (self.body/'第0001章-开始.md').read_bytes())
         self.assertTrue(second.read_bytes().endswith(b'VM edit\n'))
 
-    def test_multiple_revisions_same_export(self):
+    def test_other_revision_of_consumed_export_rejected(self):
         self.store.ingest(self.incoming(self.text.replace('旧句', '新句')))
-        result = self.store.ingest(self.incoming(self.text.replace('旧句', '更新句')))
-        self.assertEqual('applied', result['status'])
-        self.assertEqual(['　　新句。 \n'], result['chapters'][0]['edits'][0]['removed'])
+        with self.assertRaisesRegex(nr.Rejected, '本批次已成功回收'):
+            self.store.ingest(self.incoming(self.text.replace('旧句', '更新句')))
+        self.assertIn('新句', (self.body/'第0001章-开始.md').read_text())
 
     def test_check_never_writes(self):
         r = self.store.ingest(self.incoming(self.text.replace('旧句', '新句')), check=True)

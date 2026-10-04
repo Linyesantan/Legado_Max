@@ -317,9 +317,8 @@ class Store:
             baseline = {x['file']: x['hash'] for x in manifest['chapters']}
             for (payload,) in self.db.execute("SELECT payload FROM records WHERE status='applied' ORDER BY rowid"):
                 r = json.loads(payload)
-                if r['batch'] == m[1]:
-                    for f in r['files']:
-                        baseline[f['file']] = f['after']
+                if r['batch'] == m[1] and r['kind'] == 'phone':
+                    raise Rejected('本批次已成功回收过其他内容。为避免旧副本覆盖新稿，请重新导出开始下一轮改稿；原样重复发送会自动去重')
             candidates, issues = [], []
             for item, content in parsed:
                 current = self.path(item['file']).read_bytes()
