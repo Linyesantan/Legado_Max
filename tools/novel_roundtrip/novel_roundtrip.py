@@ -392,6 +392,7 @@ def main():
         p.add_argument('file')
     p = sub.add_parser('changes', help='读取既有改动记录，默认最近一次')
     p.add_argument('id', nargs='?', default='latest')
+    p.add_argument('--limit', type=int, default=1, help='一次读取最近 N 次记录，供写作上下文使用')
     sub.add_parser('history', help='列出改动历史')
     p = sub.add_parser('undo', help='恢复指定回传之前的章节，拒绝覆盖后续修改')
     p.add_argument('id', nargs='?', default='latest')
@@ -406,7 +407,10 @@ def main():
             elif a.cmd in ('import', 'check'):
                 r = s.ingest(a.file, check=a.cmd == 'check')
             elif a.cmd == 'changes':
-                r = s.report(a.id)
+                if a.limit < 1 or a.limit > 100:
+                    raise Rejected('--limit 必须在 1 到 100 之间')
+                r = ({'status': 'changes', 'records': s.history()[:a.limit]}
+                     if a.limit > 1 and a.id == 'latest' else s.report(a.id))
             elif a.cmd == 'history':
                 r = {'status': 'history', 'records': [{k: v for k, v in x.items() if k not in ('files', 'chapters')} for x in s.history()]}
             else:
