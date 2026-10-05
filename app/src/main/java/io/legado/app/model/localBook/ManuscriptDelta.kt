@@ -1,10 +1,12 @@
 package io.legado.app.model.localBook
 
 import androidx.recyclerview.widget.DiffUtil
+import androidx.annotation.Keep
 import java.security.MessageDigest
 
 /** Offsets count Unicode code points, never UTF-16 halves. Equal text is not sent. */
 object ManuscriptDelta {
+    @Keep // JSON wire names must survive R8.
     data class Change(val offset: Int, val removed: String, val added: String)
 
     private fun points(text: String): IntArray {

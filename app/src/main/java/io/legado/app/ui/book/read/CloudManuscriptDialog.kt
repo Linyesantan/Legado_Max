@@ -1,10 +1,13 @@
 package io.legado.app.ui.book.read
 
+import android.app.Dialog
 import android.os.Bundle
 import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
 import androidx.appcompat.app.AlertDialog
+import androidx.activity.ComponentDialog
+import androidx.activity.addCallback
 import androidx.core.widget.addTextChangedListener
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.ViewModel
@@ -21,6 +24,8 @@ import io.legado.app.utils.setLayout
 import io.legado.app.utils.toastOnUi
 import io.legado.app.utils.viewbindingdelegate.viewBinding
 import kotlinx.coroutines.Dispatchers.IO
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -29,6 +34,13 @@ class CloudManuscriptDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
     private val binding by viewBinding(DialogContentEditBinding::bind)
     private val model by viewModels<EditorState>()
     private var busy = false
+    private var operation: Job? = null
+    private var closing = false
+
+    override fun onCreateDialog(savedInstanceState: Bundle?): Dialog =
+        ComponentDialog(requireContext(), theme).apply {
+            onBackPressedDispatcher.addCallback(this@CloudManuscriptDialog) { close() }
+        }
 
     class EditorState : ViewModel() {
         var endpoint: String? = null
@@ -42,19 +54,23 @@ class CloudManuscriptDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
     override fun onStart() {
         super.onStart()
         setLayout(1f, ViewGroup.LayoutParams.MATCH_PARENT)
-        isCancelable = false
+        isCancelable = true
+        dialog?.setCanceledOnTouchOutside(false)
     }
 
     override fun onFragmentCreated(view: View, savedInstanceState: Bundle?) {
         binding.toolBar.title = "编辑正文"
+        binding.toolBar.setNavigationIcon(R.drawable.ic_arrow_back)
+        binding.toolBar.navigationContentDescription = "返回"
+        binding.toolBar.setNavigationOnClickListener { close() }
         binding.toolBar.subtitle = "保存后经 AWS 回传到 VM"
         binding.toolBar.menu.add(0, 1, 0, "保存并回传").setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
         binding.toolBar.menu.add(0, 2, 1, "关闭（保留草稿）")
         binding.toolBar.menu.add(0, 3, 2, "重新加载 VM 原文")
         binding.toolBar.setOnMenuItemClickListener {
-            if (!busy) when (it.itemId) {
+            if (it.itemId == 2) close()
+            else if (!busy) when (it.itemId) {
                 1 -> save()
-                2 -> close()
                 3 -> AlertDialog.Builder(requireContext()).setMessage("重新加载 VM 原文？当前草稿会保留备份。")
                     .setNegativeButton("取消", null).setPositiveButton("重新加载") { _, _ -> load(true) }.show()
             }
@@ -68,14 +84,13 @@ class CloudManuscriptDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
         busy = value
         binding.contentView.isEnabled = !value && model.snapshot != null
         binding.toolBar.menu.findItem(1).isEnabled = !value && model.snapshot != null
-        binding.toolBar.menu.findItem(2).isEnabled = !value
         binding.toolBar.menu.findItem(3).isEnabled = !value && model.endpoint != null
         binding.rlLoading.visibility = if (value) View.VISIBLE else View.GONE
     }
 
     private fun load(reload: Boolean) {
         setBusy(true)
-        lifecycleScope.launch {
+        operation = viewLifecycleOwner.lifecycleScope.launch {
             try {
                 if (model.book == null) {
                     model.book = ReadBook.book ?: error("书籍尚未打开")
@@ -100,6 +115,8 @@ class CloudManuscriptDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
                 }
                 binding.toolBar.title = model.snapshot!!.title
                 binding.contentView.setText(model.body)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 requireContext().toastOnUi(e.localizedMessage ?: "加载失败")
                 binding.toolBar.subtitle = "加载失败，可关闭后重试"
@@ -113,7 +130,7 @@ class CloudManuscriptDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
         val body = binding.contentView.text?.toString().orEmpty()
         model.body = body
         setBusy(true)
-        lifecycleScope.launch {
+        operation = viewLifecycleOwner.lifecycleScope.launch {
             var confirmed = false
             try {
                 val result = withContext(IO) {
@@ -136,6 +153,8 @@ class CloudManuscriptDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
                     "已回传 VM：+${totals.get("added_chars").asInt}字 -${totals.get("removed_chars").asInt}字"
                     else "VM 已确认保存")
                 dismiss()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 binding.toolBar.subtitle = if (confirmed) "VM 已保存，刷新失败；草稿已保留" else "回传未完成，草稿已保留"
                 AlertDialog.Builder(requireContext()).setTitle(if (confirmed) "已保存，可重试刷新" else "未确认回传成功")
@@ -146,15 +165,21 @@ class CloudManuscriptDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
     }
 
     private fun close() {
+        if (closing) return
+        closing = true
+        operation?.cancel()
         val snapshot = model.snapshot
         if (snapshot == null) { dismiss(); return }
         model.body = binding.contentView.text?.toString().orEmpty()
         setBusy(true)
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             try {
                 withContext(IO) { CloudManuscript.saveDraft(CloudManuscript.Draft(model.endpoint!!, snapshot, model.body)) }
                 dismiss()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
+                closing = false
                 requireContext().toastOnUi("草稿保存失败：${e.localizedMessage}")
             } finally { if (view != null) setBusy(false) }
         }

@@ -25,6 +25,8 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew :app:testAppSReleaseUnitTest :app:assembleAppSRelease --stacktrace
+      - name: Verify release Gson models survive R8
+        run: python3 tools/novel_roundtrip/check_r8_models.py app/build/outputs/mapping/appSRelease/mapping.txt
       - uses: actions/upload-artifact@v4
         with:
           name: 阅读Max-改稿版

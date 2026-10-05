@@ -1,6 +1,7 @@
 package io.legado.app.model.localBook
 
 import android.util.AtomicFile
+import androidx.annotation.Keep
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -13,9 +14,12 @@ import java.io.File
 import java.util.concurrent.TimeUnit
 
 object CloudManuscript {
+    @Keep // Gson constructs these models reflectively in the minified release APK.
     data class Snapshot(val schema: String, val chapter: Int, val title: String,
                         val raw: String, val revision: String, val proof: String)
+    @Keep
     data class Draft(val endpoint: String, val snapshot: Snapshot, val body: String)
+    @Keep
     data class Update(val schema: String, val base_revision: String, val after_sha256: String,
                       val proof: String, val changes: List<ManuscriptDelta.Change>)
     private val gson = Gson()
