@@ -114,14 +114,20 @@ class CloudManuscriptDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
         model.body = body
         setBusy(true)
         lifecycleScope.launch {
+            var confirmed = false
             try {
                 val result = withContext(IO) {
                     CloudManuscript.saveDraft(CloudManuscript.Draft(endpoint, snapshot, body))
                     CloudManuscript.submit(endpoint, model.headers, snapshot, body)
                 }
+                confirmed = true
                 // 只有服务器确认后才更新阅读缓存；上传失败时保留可重试草稿。
                 withContext(IO) {
-                    BookHelp.saveText(model.book!!, model.chapter!!, CloudManuscript.newRaw(snapshot, body).removePrefix("# "))
+                    // 响应丢失后的重试可能遇到更晚的新稿，回读服务器，不用旧请求覆盖阅读缓存。
+                    val latest = CloudManuscript.fetch(endpoint, model.headers)
+                    model.chapter!!.title = latest.title
+                    model.chapter!!.update()
+                    BookHelp.saveText(model.book!!, model.chapter!!, latest.raw.removePrefix("# "))
                     CloudManuscript.clearDraft(endpoint)
                 }
                 ReadBook.loadContent(model.chapter!!.index, resetPageOffset = false)
@@ -131,8 +137,8 @@ class CloudManuscriptDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
                     else "VM 已确认保存")
                 dismiss()
             } catch (e: Exception) {
-                binding.toolBar.subtitle = "回传未完成，草稿已保留"
-                AlertDialog.Builder(requireContext()).setTitle("未确认回传成功")
+                binding.toolBar.subtitle = if (confirmed) "VM 已保存，刷新失败；草稿已保留" else "回传未完成，草稿已保留"
+                AlertDialog.Builder(requireContext()).setTitle(if (confirmed) "已保存，可重试刷新" else "未确认回传成功")
                     .setMessage(e.localizedMessage ?: "请检查网络后重试")
                     .setPositiveButton("知道了", null).show()
             } finally { if (view != null) setBusy(false) }
