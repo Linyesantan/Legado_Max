@@ -16,5 +16,5 @@ for model, fields in models.items():
     match = re.search(r"^" + re.escape(name) + r" -> " + re.escape(name) + r":\n((?:[ #].*\n)*)", mapping, re.M)
     assert match, f"R8 renamed/removed JSON model: {name}"
     for field in fields.split():
-        assert re.search(r"^    \S+ " + field + r" -> " + field + r"$", match[1], re.M), f"R8 renamed/removed {name}.{field}"
+        assert re.search(r"^    \S+ " + field + r" -> " + field + r"$", match[1], re.M), f"R8 renamed/removed {name}.{field}\n{match[0]}"
 print("Release R8 mapping: all 4 Gson models and wire/draft fields preserved")

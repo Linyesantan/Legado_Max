@@ -170,3 +170,9 @@ cn.hutool.core.util.**{*;}
     public <init>(android.content.Context, android.util.AttributeSet);
     public <init>(android.content.Context, android.util.AttributeSet, int);
 }
+# Gson reflects over manuscript constructors and private fields. Keep both:
+# this project's annotation rules alone retain class names, not all members.
+-keep class io.legado.app.model.localBook.CloudManuscript$Snapshot { *; }
+-keep class io.legado.app.model.localBook.CloudManuscript$Draft { *; }
+-keep class io.legado.app.model.localBook.CloudManuscript$Update { *; }
+-keep class io.legado.app.model.localBook.ManuscriptDelta$Change { *; }
