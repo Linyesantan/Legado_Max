@@ -11,6 +11,7 @@ import androidx.activity.addCallback
 import androidx.core.widget.addTextChangedListener
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import io.legado.app.R
 import io.legado.app.base.BaseDialogFragment
@@ -36,6 +37,17 @@ class CloudManuscriptDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
     private var busy = false
     private var operation: Job? = null
     private var closing = false
+
+    private suspend fun updateUi(editorView: View, update: (android.content.Context) -> Unit) {
+        updateEditorUi({
+            isAdded && view === editorView && !isStateSaved &&
+                viewLifecycleOwnerLiveData.value?.lifecycle?.currentState?.let {
+                    it != Lifecycle.State.DESTROYED
+                } == true
+        }) {
+            context?.let(update)
+        }
+    }
 
     override fun onCreateDialog(savedInstanceState: Bundle?): Dialog =
         ComponentDialog(requireContext(), theme).apply {
@@ -89,6 +101,7 @@ class CloudManuscriptDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
     }
 
     private fun load(reload: Boolean) {
+        val editorView = view ?: return
         setBusy(true)
         operation = viewLifecycleOwner.lifecycleScope.launch {
             try {
@@ -113,18 +126,23 @@ class CloudManuscriptDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
                     model.snapshot = draft.snapshot
                     model.body = draft.body
                 }
-                binding.toolBar.title = model.snapshot!!.title
-                binding.contentView.setText(model.body)
+                updateUi(editorView) {
+                    binding.toolBar.title = model.snapshot!!.title
+                    binding.contentView.setText(model.body)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                requireContext().toastOnUi(e.localizedMessage ?: "加载失败")
-                binding.toolBar.subtitle = "加载失败，可关闭后重试"
-            } finally { if (view != null) setBusy(false) }
+                updateUi(editorView) { ctx ->
+                    ctx.toastOnUi(e.localizedMessage ?: "加载失败")
+                    binding.toolBar.subtitle = "加载失败，可关闭后重试"
+                }
+            } finally { updateUi(editorView) { setBusy(false) } }
         }
     }
 
     private fun save() {
+        val editorView = view ?: return
         val snapshot = model.snapshot ?: return
         val endpoint = model.endpoint ?: return
         val body = binding.contentView.text?.toString().orEmpty()
@@ -147,24 +165,30 @@ class CloudManuscriptDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
                     BookHelp.saveText(model.book!!, model.chapter!!, latest.raw.removePrefix("# "))
                     CloudManuscript.clearDraft(endpoint)
                 }
-                ReadBook.loadContent(model.chapter!!.index, resetPageOffset = false)
-                val totals = result.getAsJsonObject("totals")
-                requireContext().toastOnUi(if (totals != null && totals.has("added_chars"))
-                    "已回传 VM：+${totals.get("added_chars").asInt}字 -${totals.get("removed_chars").asInt}字"
-                    else "VM 已确认保存")
-                dismiss()
+                updateUi(editorView) { ctx ->
+                    ReadBook.loadContent(model.chapter!!.index, resetPageOffset = false)
+                    val totals = result.getAsJsonObject("totals")
+                    ctx.toastOnUi(if (totals != null && totals.has("added_chars"))
+                        "已回传 VM：+${totals.get("added_chars").asInt}字 -${totals.get("removed_chars").asInt}字"
+                        else "VM 已确认保存")
+                    dismiss()
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                binding.toolBar.subtitle = if (confirmed) "VM 已保存，刷新失败；草稿已保留" else "回传未完成，草稿已保留"
-                AlertDialog.Builder(requireContext()).setTitle(if (confirmed) "已保存，可重试刷新" else "未确认回传成功")
-                    .setMessage(e.localizedMessage ?: "请检查网络后重试")
-                    .setPositiveButton("知道了", null).show()
-            } finally { if (view != null) setBusy(false) }
+                updateUi(editorView) { ctx ->
+                    binding.toolBar.subtitle = if (confirmed) "VM 已保存，刷新失败；草稿已保留" else "回传未完成，草稿已保留"
+                    AlertDialog.Builder(ctx).setTitle(if (confirmed) "已保存，可重试刷新" else "未确认回传成功")
+                        .setMessage(e.localizedMessage ?: "请检查网络后重试")
+                        .setPositiveButton("知道了", null).show()
+                }
+            } finally { updateUi(editorView) { setBusy(false) } }
         }
     }
 
     private fun close() {
+        val editorView = view ?: return
+        if (!isAdded || isStateSaved) return
         if (closing) return
         closing = true
         operation?.cancel()
@@ -175,13 +199,15 @@ class CloudManuscriptDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
         viewLifecycleOwner.lifecycleScope.launch {
             try {
                 withContext(IO) { CloudManuscript.saveDraft(CloudManuscript.Draft(model.endpoint!!, snapshot, model.body)) }
-                dismiss()
+                updateUi(editorView) { dismiss() }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                closing = false
-                requireContext().toastOnUi("草稿保存失败：${e.localizedMessage}")
-            } finally { if (view != null) setBusy(false) }
+                updateUi(editorView) { ctx ->
+                    closing = false
+                    ctx.toastOnUi("草稿保存失败：${e.localizedMessage}")
+                }
+            } finally { updateUi(editorView) { setBusy(false) } }
         }
     }
 }

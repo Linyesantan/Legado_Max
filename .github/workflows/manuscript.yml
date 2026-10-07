@@ -32,3 +32,8 @@ jobs:
           if-no-files-found: error
       - name: Verify release Gson models survive R8
         run: python3 tools/novel_roundtrip/check_release_dex.py app/build/outputs/apk/appS/release/*.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 改稿版-混淆映射
+          path: app/build/outputs/mapping/appSRelease/mapping.txt
+          if-no-files-found: error
