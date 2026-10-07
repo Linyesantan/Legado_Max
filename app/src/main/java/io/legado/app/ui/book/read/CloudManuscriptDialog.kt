@@ -61,6 +61,8 @@ class CloudManuscriptDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
         var body: String = ""
         var book: Book? = null
         var chapter: BookChapter? = null
+        var pageText: String? = null
+        var precedingChars = 0
     }
 
     override fun onStart() {
@@ -71,6 +73,15 @@ class CloudManuscriptDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
     }
 
     override fun onFragmentCreated(view: View, savedInstanceState: Bundle?) {
+        if (model.pageText == null) {
+            val chapter = ReadBook.curTextChapter
+            val pageIndex = ReadBook.durPageIndex
+            val page = chapter?.getPage(pageIndex)
+            model.pageText = page?.lines?.filter { !it.isTitle }?.joinToString("") { it.text }.orEmpty()
+            model.precedingChars = chapter?.pages?.take(pageIndex)?.sumOf { previous ->
+                previous.lines.filter { !it.isTitle }.sumOf { ReadingEditPosition.compact(it.text).length }
+            } ?: ReadBook.durChapterPos
+        }
         binding.toolBar.title = "编辑正文"
         binding.toolBar.setNavigationIcon(R.drawable.ic_arrow_back)
         binding.toolBar.navigationContentDescription = "返回"
@@ -79,12 +90,14 @@ class CloudManuscriptDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
         binding.toolBar.menu.add(0, 1, 0, "保存并回传").setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
         binding.toolBar.menu.add(0, 2, 1, "关闭（保留草稿）")
         binding.toolBar.menu.add(0, 3, 2, "重新加载 VM 原文")
+        binding.toolBar.menu.add(0, 4, 3, "回到阅读位置")
         binding.toolBar.setOnMenuItemClickListener {
             if (it.itemId == 2) close()
             else if (!busy) when (it.itemId) {
                 1 -> save()
                 3 -> AlertDialog.Builder(requireContext()).setMessage("重新加载 VM 原文？当前草稿会保留备份。")
                     .setNegativeButton("取消", null).setPositiveButton("重新加载") { _, _ -> load(true) }.show()
+                4 -> scrollToReadingPosition(view)
             }
             true
         }
@@ -92,11 +105,26 @@ class CloudManuscriptDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
         load(false)
     }
 
+    private fun scrollToReadingPosition(editorView: View) {
+        val editor = binding.contentView
+        val offset = ReadingEditPosition.locate(editor.text?.toString().orEmpty(),
+            model.pageText.orEmpty(), model.precedingChars)
+        editor.post {
+            if (!isAdded || view !== editorView || closing) return@post
+            val layout = editor.layout ?: return@post
+            val cursor = offset.coerceIn(0, editor.text?.length ?: 0)
+            editor.setSelection(cursor)
+            val line = layout.getLineForOffset(cursor)
+            editor.scrollTo(0, (layout.getLineTop(line) - editor.height / 4).coerceAtLeast(0))
+        }
+    }
+
     private fun setBusy(value: Boolean) {
         busy = value
         binding.contentView.isEnabled = !value && model.snapshot != null
         binding.toolBar.menu.findItem(1).isEnabled = !value && model.snapshot != null
         binding.toolBar.menu.findItem(3).isEnabled = !value && model.endpoint != null
+        binding.toolBar.menu.findItem(4).isEnabled = !value && model.snapshot != null
         binding.rlLoading.visibility = if (value) View.VISIBLE else View.GONE
     }
 
@@ -129,6 +157,7 @@ class CloudManuscriptDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
                 updateUi(editorView) {
                     binding.toolBar.title = model.snapshot!!.title
                     binding.contentView.setText(model.body)
+                    scrollToReadingPosition(editorView)
                 }
             } catch (e: CancellationException) {
                 throw e
