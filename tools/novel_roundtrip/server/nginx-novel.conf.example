@@ -1,0 +1,8 @@
+# VPS 上的反代示例：https://YOUR_DOMAIN/novel/ -> 127.0.0.1:8790
+location /novel/ {
+    proxy_pass http://127.0.0.1:8790/novel/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Prefix /novel;
+    client_max_body_size 4m;
+}

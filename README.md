@@ -23,6 +23,24 @@
 - **appS版**：包名 `io.legado.app.yuedu.a`，另一个共存包名
 #### 下载地址 [Gitee Releases](https://gitee.com/GEd520/legados/releases)
 
+## 本 fork 独有：改稿回传
+
+为“和 AI 一起写小说”设计：在手机阅读时直接改稿，把修改意图回传给书源服务，AI 据此继续润色。
+
+**适用场景**：适合修改、润色已有章节。写新章建议在电脑上由 AI 起草，再到手机上读、改、回传；手机端不适合长篇输入。
+
+- **阅读页一键编辑**：阅读菜单底栏新增「编辑」，打开即定位到当前阅读段落；展示原始正文，保留标题行。
+- **只传增量**：用 Myers 差分计算真正的增删，只上传改动片段（`novel-delta/1`），按 Unicode 码点定位，emoji 不错位。
+- **自动合并**：服务器没变直接写入；AI 已润色别的段落时按段落三方合并后写入；同一段双方改得不同才算冲突，只记录不覆盖，交给 AI 按你的版本处理。
+- **草稿不丢**：请求前先持久化草稿，失败可重试，冲突时不强行覆盖，重载前自动备份；重复提交自动去重。
+- **服务端工具**：`tools/novel_roundtrip/` 提供回传协议、无损 TXT 往返、历史查询与撤销（`novel-roundtrip changes / undo`），配有测试。
+- **自动打包**：推送 `manuscript-roundtrip` 分支即由 GitHub Actions（Manuscript Build）生成 APK。
+
+详细协议见 [tools/novel_roundtrip/APP-EDIT.md](https://github.com/Linyesantan/Legado_Max/blob/manuscript-roundtrip/tools/novel_roundtrip/APP-EDIT.md)（代码在 `manuscript-roundtrip` 分支）。
+
+- 服务端部署（书源服务、systemd、反代示例）：[tools/novel_roundtrip/server](https://github.com/Linyesantan/Legado_Max/tree/manuscript-roundtrip/tools/novel_roundtrip/server)
+- AI 写作模式接入（回传查询 skill 与写作规则）：[tools/novel_roundtrip/ai-skills](https://github.com/Linyesantan/Legado_Max/tree/manuscript-roundtrip/tools/novel_roundtrip/ai-skills)
+
 # 覆盖安装注意事项 [![](https://img.shields.io/badge/-覆盖安装注意事项-F5F5F5.svg)](#覆盖安装注意事项-)
 
 > ⚠️ **重要提醒**：安装Max版前一定要备份！

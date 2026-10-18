@@ -26,6 +26,7 @@ import io.legado.app.R
 import io.legado.app.base.adapter.ItemViewHolder
 import io.legado.app.base.adapter.RecyclerAdapter
 import io.legado.app.constant.AppLog
+import io.legado.app.constant.EventBus
 import io.legado.app.constant.PreferKey
 import io.legado.app.databinding.ItemTextBinding
 import io.legado.app.databinding.PopupActionMenuBinding
@@ -381,7 +382,7 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
                 name = selectedText.take(30)
             }
             HighlightRuleEditDialog(newRule, null) { savedRule ->
-                activity.postEvent(EventBus.UP_CONFIG, arrayListOf(5))
+                postEvent(EventBus.UP_CONFIG, arrayListOf(5))
                 activity.toastOnUi("高亮规则已添加: ${savedRule.name}")
             }.show(activity.supportFragmentManager, "highlightRuleEdit")
         }

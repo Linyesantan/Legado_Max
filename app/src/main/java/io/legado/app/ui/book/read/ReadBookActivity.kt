@@ -572,7 +572,7 @@ class ReadBookActivity : BaseReadBookActivity(),
             R.id.menu_download -> showDownloadDialog()
             R.id.menu_add_bookmark -> addBookmark()
             R.id.menu_simulated_reading -> showSimulatedReading()
-            R.id.menu_edit_content -> showDialogFragment(ContentEditDialog())
+            R.id.menu_edit_content -> editCurrentChapter()
             R.id.menu_update_toc -> ReadBook.book?.let {
                 if (it.isEpub) {
                     BookHelp.clearCache(it)
@@ -1188,6 +1188,15 @@ class ReadBookActivity : BaseReadBookActivity(),
     /**
      * 自动翻页
      */
+    override fun editCurrentChapter() {
+        val url = ReadBook.curTextChapter?.chapter?.url.orEmpty()
+        if (io.legado.app.model.localBook.CloudManuscript.endpoint(url) != null) {
+            showDialogFragment(CloudManuscriptDialog())
+        } else {
+            showDialogFragment(ContentEditDialog())
+        }
+    }
+
     override fun autoPage() {
         ReadAloud.stop(this)
         if (isAutoPage) {

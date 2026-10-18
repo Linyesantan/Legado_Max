@@ -44,6 +44,7 @@ class TextFile(private var book: Book) {
 
         @Throws(FileNotFoundException::class)
         fun getChapterList(book: Book): ArrayList<BookChapter> {
+            NovelRoundtrip.toc(book)?.let { return it }
             return getTextFile(book).getChapterList()
         }
 

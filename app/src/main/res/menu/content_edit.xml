@@ -17,6 +17,18 @@
         app:showAsAction="always" />
 
     <item
+        android:id="@+id/menu_share_manuscript"
+        android:title="分享改稿 TXT"
+        android:visible="false"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/menu_discard_manuscript"
+        android:title="放弃本次编辑并关闭"
+        android:visible="false"
+        app:showAsAction="never" />
+
+    <item
         android:id="@+id/menu_reset"
         android:title="@string/reset"
         app:showAsAction="never" />

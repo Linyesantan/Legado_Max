@@ -1,0 +1,12 @@
+# 可选：本机没有公网 IP 时，用 SSH 反向隧道把 8790 暴露到 VPS 的 127.0.0.1:8790，再由 VPS 反代。
+[Unit]
+Description=本机 8790 -> VPS 127.0.0.1:8790 反向隧道
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/ssh -N -R 127.0.0.1:8790:127.0.0.1:8790 -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 USER@YOUR_VPS
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

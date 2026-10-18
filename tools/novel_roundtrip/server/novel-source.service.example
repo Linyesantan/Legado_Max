@@ -1,0 +1,15 @@
+# systemd --user 单元示例：cp 到 ~/.config/systemd/user/novel-source.service
+[Unit]
+Description=网文 Legado 书源服务 + 手机改稿回传
+After=network.target
+
+[Service]
+# 按实际仓库路径修改
+ExecStart=/usr/bin/python3 %h/Legado_Max/tools/novel_roundtrip/server/novel_source_server.py --port 8790 --host 127.0.0.1
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=%h/.config/novel/source.env
+
+[Install]
+WantedBy=default.target
