@@ -346,6 +346,25 @@ class Store:
         return [json.loads(r[0]) for r in self.db.execute(
             f"SELECT payload FROM records WHERE status IN ({marks}) ORDER BY rowid DESC", statuses)]
 
+    def open_conflicts(self):
+        # 未处理的冲突：正文没写入，必须优先呈现给用户，不能被后面的改动挤掉。
+        out = []
+        for (payload,) in self.db.execute("SELECT payload FROM records WHERE status='conflict' ORDER BY rowid DESC"):
+            r = json.loads(payload)
+            out.append({'id': r['id'], 'time': r.get('time'), 'chapter': r.get('chapter'), 'file': r.get('file'),
+                        'conflicts': len(r.get('conflicts', []))})
+        return out
+
+    def resolve(self, key):
+        row = self.db.execute("SELECT payload FROM records WHERE id=? AND status='conflict'", (key,)).fetchone()
+        if not row:
+            raise Rejected('没有这条未处理冲突：' + key)
+        data = json.loads(row[0])
+        data['status'] = 'resolved'
+        data['resolved_time'] = now()
+        self.record(data, 'resolved')
+        return {'status': 'resolved', 'id': key}
+
     def report(self, key='latest', pending=False):
         rows = self.history(pending)
         for r in rows:
@@ -367,6 +386,13 @@ class Store:
 
 
 def render(r):
+    text = _render(r)
+    if r.get('open_conflicts'):
+        text += '\n\n⚠ 未处理冲突（正文未写入）：' + '；'.join(f"{c['id']} 第{c['chapter']}章 {c['conflicts']}处" for c in r['open_conflicts'])
+    return text
+
+
+def _render(r):
     status = r['status']
     if status != 'applied':
         return json.dumps(r, ensure_ascii=False, indent=2)
@@ -398,6 +424,8 @@ def main():
     p.add_argument('id', nargs='?', default='latest')
     p.add_argument('--limit', type=int, default=1, help='一次读取最近 N 次记录，供写作上下文使用')
     sub.add_parser('history', help='列出改动历史')
+    p = sub.add_parser('resolve', help='用户已裁决并处理完的冲突，标记为已处理')
+    p.add_argument('id')
     p = sub.add_parser('undo', help='恢复指定回传之前的章节，拒绝覆盖后续修改')
     p.add_argument('id', nargs='?', default='latest')
     a = ap.parse_args()
@@ -415,8 +443,13 @@ def main():
                     raise Rejected('--limit 必须在 1 到 100 之间')
                 r = ({'status': 'changes', 'records': s.history(True)[:a.limit]}
                      if a.limit > 1 and a.id == 'latest' else s.report(a.id, True))
+                pending = [c for c in s.open_conflicts() if c['id'] != r.get('id')]
+                if pending:
+                    r['open_conflicts'] = pending
             elif a.cmd == 'history':
                 r = {'status': 'history', 'records': [{k: v for k, v in x.items() if k not in ('files', 'chapters', 'base_raw', 'server_raw', 'edited_raw', 'merged_preview', 'merge')} for x in s.history(True)]}
+            elif a.cmd == 'resolve':
+                r = s.resolve(a.id)
             else:
                 r = s.undo(a.id)
         print(json.dumps(r, ensure_ascii=False, indent=2) if a.json else render(r))

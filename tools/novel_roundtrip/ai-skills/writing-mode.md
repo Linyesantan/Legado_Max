@@ -22,3 +22,7 @@ fi
 
 把这些人工改稿作为 `human_revision_records` 传给 context-agent，尊重用户改过的正文，不因旧摘要或旧缓存把它改回。
 发现故事事实冲突时指出冲突，不自行撤销人工改稿；不能从个别修改推断永久风格偏好。
+
+## 未处理冲突（必须最先看）
+
+`novel-roundtrip --json changes` 返回含 `open_conflicts` 时，说明手机改稿和 AI 改了同一段，正文未写入。AI 必须在做任何别的事之前主动呈现每处 base/ai/user 三版对比，默认采用用户版本；写入后执行 `novel-roundtrip resolve <id>` 标记已处理。AI 只改了段首缩进的情况会自动合并，不算冲突。

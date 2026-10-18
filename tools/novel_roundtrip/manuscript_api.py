@@ -78,6 +78,31 @@ def _region(base, hunks, start, end):
     return ''.join(out)
 
 
+_INDENT = ' \u3000\t'
+
+
+def _strip_lines(text):
+    return [l.lstrip(_INDENT) for l in text.splitlines(True)]
+
+
+def _indent_only(base_text, ai_text):
+    return base_text != ai_text and _strip_lines(base_text) == _strip_lines(ai_text)
+
+
+def _apply_indent(ai_text, user_text):
+    ai_lines = [l for l in ai_text.splitlines(True) if l.strip()]
+    prefix = ''
+    if ai_lines and all(l.startswith('\u3000\u3000') for l in ai_lines if not l.lstrip(_INDENT).startswith('#')):
+        prefix = '\u3000\u3000'
+    if not prefix:
+        return user_text
+    out = []
+    for l in user_text.splitlines(True):
+        body = l.lstrip(_INDENT)
+        out.append(prefix + body if body.strip() and not body.startswith('#') else l)
+    return ''.join(out)
+
+
 def merge3(base_raw, ai_raw, user_raw):
     """按段落三方合并：不同段直接合并；同段改成一样只留一份；同段改得不同算冲突。
 
@@ -102,7 +127,11 @@ def merge3(base_raw, ai_raw, user_raw):
         user_text = _region(base, user, start, end)
         if ai and user:
             ai_text = _region(base, ai, start, end)
-            if ai_text != user_text:
+            base_text = ''.join(base[start:end])
+            if _indent_only(base_text, ai_text):
+                # AI 只规范了段首缩进：用用户正文，套上 AI 的缩进，不算冲突。
+                user_text = _apply_indent(ai_text, user_text)
+            elif ai_text != user_text:
                 conflicts.append({'line': start + 1, 'base': ''.join(base[start:end]),
                                   'ai': ai_text, 'user': user_text})
             out.append(user_text)

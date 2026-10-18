@@ -25,3 +25,7 @@ novel-roundtrip --json changes --limit 20
 - 用户明确要求恢复：`novel-roundtrip undo <id>`；有后续改动会拒绝覆盖，不要绕过。
 
 回传只改 `正文/`，不动设定、大纲、审查报告和 `.webnovel/`。凭据不写入 skill、仓库或 APK。
+
+## 未处理冲突（必须最先看）
+
+`novel-roundtrip --json changes` 返回含 `open_conflicts` 时，说明手机改稿和 AI 改了同一段，正文未写入。AI 必须在做任何别的事之前主动呈现每处 base/ai/user 三版对比，默认采用用户版本；写入后执行 `novel-roundtrip resolve <id>` 标记已处理。AI 只改了段首缩进的情况会自动合并，不算冲突。

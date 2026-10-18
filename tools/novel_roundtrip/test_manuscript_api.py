@@ -158,6 +158,12 @@ class DeltaTests(unittest.TestCase):
         _, conflicts = merge3(base, '# T\n\nA\n\nX\n\nB\n', '# T\n\nA\n\nY\n\nB\n')
         self.assertEqual(1, len(conflicts))
 
+    def test_indent_only_ai_change_is_not_conflict(self):
+        base = '# T\n\n旧句子很长。\n\nB\n'
+        merged, conflicts = merge3(base, '# T\n\n\u3000\u3000旧句子很长。\n\nB\n', '# T\n\n新句子。\n\nB\n')
+        self.assertEqual([], conflicts)
+        self.assertIn('\u3000\u3000新句子。\n', merged)
+
     def test_bad_removed(self):
         p = self.payload();p['changes'][0]['removed']='错误原文'
         with self.assertRaisesRegex(Rejected,'原文不匹配'):
