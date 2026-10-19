@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import tempfile
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -181,6 +182,184 @@ class RoundtripTests(unittest.TestCase):
         e = self.store.export()
         self.assertEqual('unchanged', self.store.ingest(e['file'])['status'])
         self.assertEqual(raw, p.read_bytes())
+
+
+class SnapshotWriteTests(unittest.TestCase):
+    """PC 端写正文必须带基准校验：snapshot -> AI 新稿 -> write --base。"""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.project = root/'book'
+        self.body = self.project/'正文'
+        self.body.mkdir(parents=True)
+        self.file = self.body/'第0001章-开始.md'
+        self.base = '# 第1章 开始\n\n　　他走进屋里。\n\n　　桌上有一张地图。\n'
+        self.file.write_text(self.base, encoding='utf-8')
+        self.store = nr.Store(self.project, root/'state')
+
+    def tearDown(self):
+        self.store.db.close()
+        self.temp.cleanup()
+
+    def snap(self):
+        return self.store.snapshot(1)
+
+    def incoming(self, text, name='ai.md', newline='\n', bom=False):
+        p = Path(self.temp.name)/name
+        data = text.replace('\n', newline).encode('utf-8')
+        p.write_bytes((b'\xef\xbb\xbf' if bom else b'') + data)
+        return p
+
+    def phone_commit(self, text):
+        current = self.file.read_bytes()
+        output = text.encode('utf-8')
+        self.store.commit([({'num': 1, 'file': self.file.name}, current, output)], 'phone')
+        return output
+
+    def test_snapshot_returns_base_revision(self):
+        snap = self.snap()
+        self.assertEqual({'chapter', 'file', 'revision', 'raw'}, set(snap))
+        self.assertEqual(nr.digest(self.file.read_bytes()), snap['revision'])
+        self.assertEqual(self.base, snap['raw'])
+
+    def test_write_with_matching_base_writes_and_undoes(self):
+        snap = self.snap()
+        polished = self.base.replace('他走进屋里', '他推门进屋')
+        r = self.store.write_ai(1, snap['revision'], self.incoming(polished).read_bytes())
+        self.assertEqual(('applied', False), (r['status'], r['merged']))
+        self.assertEqual(polished, self.file.read_text())
+        self.assertEqual('ai', self.store.history()[0]['kind'])
+        self.store.undo(r['id'])
+        self.assertEqual(self.base, self.file.read_text())
+
+    def test_write_stale_base_merges_phone_change(self):
+        snap = self.snap()
+        with_phone = self.base + '　　5km叫不远？\n'
+        self.phone_commit(with_phone)
+        polished = self.base.replace('他走进屋里', '他推门进屋')
+        r = self.store.write_ai(1, snap['revision'], self.incoming(polished).read_bytes())
+        self.assertEqual(('applied', True), (r['status'], r['merged']))
+        text = self.file.read_text()
+        self.assertIn('5km', text)
+        self.assertIn('推门进屋', text)
+        kinds = [x['kind'] for x in self.store.history()]
+        self.assertEqual(['ai-merge', 'phone'], kinds)
+
+    def test_write_conflict_keeps_file_and_records(self):
+        snap = self.snap()
+        self.phone_commit(self.base.replace('桌上有一张地图', '桌上有一张手绘地图'))
+        ai = self.base.replace('桌上有一张地图', '桌上摊着一张军用地图')
+        r = self.store.write_ai(1, snap['revision'], self.incoming(ai).read_bytes())
+        self.assertEqual('conflict', r['status'])
+        self.assertEqual(1, len(r['conflicts']))
+        self.assertEqual(self.base.replace('桌上有一张地图', '桌上有一张手绘地图'), self.file.read_text())
+        self.assertEqual(['phone'], [x['kind'] for x in self.store.history()])
+        rec = self.store.history(True)[0]
+        self.assertEqual('ai-conflict', rec['kind'])
+        self.assertIn('军用地图', rec['conflicts'][0]['ai'])
+        self.assertIn('手绘地图', rec['conflicts'][0]['user'])
+
+    def test_write_preserves_bom_crlf(self):
+        raw = b'\xef\xbb\xbf' + self.base.replace('\n', '\r\n').encode()
+        self.file.write_bytes(raw)
+        snap = self.snap()
+        self.phone_commit(self.base + '　　手机加的。\n')
+        self.file.write_bytes(b'\xef\xbb\xbf' + (self.base + '　　手机加的。\n').replace('\n', '\r\n').encode())
+        r = self.store.write_ai(1, snap['revision'], self.incoming(self.base.replace('地图', '海图')).read_bytes())
+        self.assertEqual('applied', r['status'])
+        data = self.file.read_bytes()
+        self.assertTrue(data.startswith(b'\xef\xbb\xbf'))
+        self.assertNotIn(b'\n', data.replace(b'\r\n', b''))
+        self.assertIn('手机加的'.encode(), data)
+
+    def test_snapshot_blob_supports_write_on_fresh_chapter(self):
+        # 章节从没进过 history：snapshot 必须落盘基准，手机先回传后仍能合并
+        snap = self.snap()
+        self.assertTrue(self.store.read_blob(snap['revision']))
+        with_phone = self.base + '　　手机补一句。\n'
+        self.phone_commit(with_phone)
+        polished = self.base.replace('他走进屋里', '他推门进屋')
+        r = self.store.write_ai(1, snap['revision'], self.incoming(polished).read_bytes())
+        self.assertEqual(('applied', True), (r['status'], r['merged']))
+        text = self.file.read_text()
+        self.assertIn('手机补一句', text)
+        self.assertIn('推门进屋', text)
+        self.assertEqual('ai-merge', self.store.history()[0]['kind'])
+
+    def test_write_rejects_unknown_base(self):
+        with self.assertRaisesRegex(nr.Rejected, '找不到基准快照'):
+            self.store.write_ai(1, 'a'*64, self.incoming(self.base).read_bytes())
+        self.assertEqual(self.base, self.file.read_text())
+
+    def test_external_change_recorded_and_undoable(self):
+        snap = self.snap()
+        self.phone_commit(self.base + '　　手机写的。\n')
+        self.file.write_text(self.base + '　　手机写的。\n　　绕过工具加的一句。\n')
+        self.store.snapshot(1)
+        rec = self.store.history()[0]
+        self.assertEqual('external', rec['kind'])
+        self.assertIn('绕过工具', self.file.read_text())
+        self.store.undo(rec['id'])
+        self.assertEqual(self.base + '　　手机写的。\n', self.file.read_text())
+
+    def test_external_recorded_once(self):
+        self.snap()
+        self.phone_commit(self.base)
+        self.file.write_text(self.base + '外部\n')
+        self.store.snapshot(1)
+        self.store.snapshot(1)
+        self.store.export()
+        self.assertEqual(1, len([x for x in self.store.history() if x['kind'] == 'external']))
+
+
+class SnapshotWriteCliTests(unittest.TestCase):
+    """命令行契约：snapshot 输出 JSON；冲突退出码非 0 且不写文件。"""
+
+    def setUp(self):
+        import os, subprocess
+        self.subprocess, self.os = subprocess, os
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.project = root/'book'
+        body = self.project/'正文'
+        body.mkdir(parents=True)
+        self.file = body/'第0001章-开始.md'
+        self.base = '# 第1章 开始\n\n　　原文。\n'
+        self.file.write_text(self.base, encoding='utf-8')
+        self.env = dict(os.environ, NOVEL_PROJECT=str(self.project), NOVEL_STATE=str(root/'state'))
+        self.script = str(Path(__file__).with_name('novel_roundtrip.py'))
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def run_cli(self, *args):
+        return self.subprocess.run([sys.executable, self.script, *args], capture_output=True,
+                                   text=True, env=self.env)
+
+    def test_snapshot_then_write_and_conflict_exit_code(self):
+        snap = self.run_cli('snapshot', '1')
+        self.assertEqual(0, snap.returncode, snap.stderr)
+        data = json.loads(snap.stdout)
+        self.assertEqual(self.base, data['raw'])
+        ai = Path(self.temp.name)/'ai.md'
+        ai.write_text(self.base.replace('原文', 'AI稿'), encoding='utf-8')
+        ok = self.run_cli('write', '1', '--base', data['revision'], '--file', str(ai))
+        self.assertEqual(0, ok.returncode, ok.stdout + ok.stderr)
+        self.assertEqual(self.base.replace('原文', 'AI稿'), self.file.read_text())
+
+        snap2 = json.loads(self.run_cli('snapshot', '1').stdout)
+        self.file.write_text(self.base.replace('原文', '手机稿'), encoding='utf-8')
+        ai2 = Path(self.temp.name)/'ai2.md'
+        ai2.write_text(self.base.replace('原文', '另一AI稿'), encoding='utf-8')
+        conflict = self.run_cli('write', '1', '--base', snap2['revision'], '--file', str(ai2))
+        self.assertNotEqual(0, conflict.returncode)
+        self.assertIn('status=conflict', conflict.stdout)
+        self.assertEqual(self.base.replace('原文', '手机稿'), self.file.read_text())
+        # 查询历史冲突是正常退出，不能把 changes 也当失败
+        changes = self.run_cli('--json', 'changes')
+        self.assertEqual(0, changes.returncode)
+        self.assertEqual('ai-conflict', json.loads(changes.stdout)['kind'])
 
 
 if __name__ == '__main__':

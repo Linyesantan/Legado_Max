@@ -236,8 +236,11 @@ class MainViewModel(application: Application) : BaseViewModel(application) {
                     appDb.bookDao.replace(oldBook, book)
                     BookHelp.updateCacheFolder(oldBook, book)
                 }
+                val oldChapters = appDb.bookChapterDao.getChapterList(bookUrl)
                 appDb.bookChapterDao.delByBook(bookUrl)
                 appDb.bookChapterDao.insert(*toc.toTypedArray())
+                // 云端正文改过后章节 ?v 会变，阅读缓存必须同步失效。
+                BookHelp.invalidateManuscriptCache(book, oldChapters, toc)
                 ReadBook.onChapterListUpdated(book)
                 addDownload(source, book)
                 logUpdate("✅ 任务完成（书源${source.bookSourceName}，书籍《${book.name}》）：更新成功")

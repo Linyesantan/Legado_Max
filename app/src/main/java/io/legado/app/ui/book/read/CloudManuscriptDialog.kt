@@ -141,18 +141,22 @@ class CloudManuscriptDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
                 }
                 if (model.snapshot == null || reload) {
                     val endpoint = model.endpoint!!
+                    var fresh = false
                     val draft = withContext(IO) {
                         if (reload) {
                             model.snapshot?.let { CloudManuscript.saveDraft(CloudManuscript.Draft(endpoint, it, model.body)) }
                             val snapshot = CloudManuscript.fetch(endpoint, model.headers)
                             CloudManuscript.archiveDraft(endpoint)
+                            fresh = true
                             CloudManuscript.Draft(endpoint, snapshot, snapshot.raw.substringAfter('\n'))
                         } else CloudManuscript.draft(endpoint) ?: CloudManuscript.fetch(endpoint, model.headers).let {
+                            fresh = true
                             CloudManuscript.Draft(endpoint, it, it.raw.substringAfter('\n'))
                         }
                     }
                     model.snapshot = draft.snapshot
                     model.body = draft.body
+                    syncReaderCache(draft, fresh)
                 }
                 updateUi(editorView) {
                     binding.toolBar.title = model.snapshot!!.title
@@ -167,6 +171,32 @@ class CloudManuscriptDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
                     binding.toolBar.subtitle = "加载失败，可关闭后重试"
                 }
             } finally { updateUi(editorView) { setBusy(false) } }
+        }
+    }
+
+    /**
+     * 阅读缓存文件名只含 序号+标题MD5，服务器正文被 PC 端改过也不会失效。
+     * 打开编辑器（或重新加载服务器原文）时顺带对齐，避免阅读页继续显示旧正文。
+     */
+    private suspend fun syncReaderCache(draft: CloudManuscript.Draft, fresh: Boolean) {
+        // 只有刚从服务器 fetch 的 snapshot 才能代表线上正文；草稿里的 snapshot 是存草稿时的旧版本，
+        // 写进缓存会把阅读页退回旧正文。
+        if (!fresh) return
+        val book = model.book ?: return
+        val chapter = model.chapter ?: return
+        val latest = draft.snapshot.raw.removePrefix("# ")
+        val dirty = draft.body != draft.snapshot.raw.substringAfter('\n')
+        val changed = withContext(IO) {
+            if (BookHelp.getContent(book, chapter) == latest) {
+                false
+            } else {
+                BookHelp.saveText(book, chapter, latest)
+                true
+            }
+        }
+        // 有未保存草稿时只更新缓存，不用服务器版本覆盖正在编辑的内容。
+        if (changed && !dirty) {
+            ReadBook.loadContent(chapter.index, resetPageOffset = false)
         }
     }
 

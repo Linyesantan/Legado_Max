@@ -44,6 +44,8 @@ GATEWAY_AUTH_FILE = Path(
 ).expanduser()
 CHANGELOG_DIR = ".changelog"
 PUBLIC_HOST = os.environ.get("NOVEL_PUBLIC_HOST", "").strip()
+# 改稿历史根目录；不设置时沿用 ~/.local/state/novel-roundtrip（测试可整体重定向）。
+STATE_ROOT = os.environ.get("NOVEL_STATE_ROOT") or None
 
 # 改稿接口与书源共用端口；增量写入和历史由独立模块处理。
 sys.path.insert(0, os.environ.get('NOVEL_ROUNDTRIP_LIB', str(Path(__file__).resolve().parent.parent)))
@@ -553,7 +555,8 @@ class Handler(BaseHTTPRequestHandler):
             path = "/"
         try:
             if handle_manuscript(self, path, BOOKS_ROOT, EDIT_TOKEN,
-                                 json.loads(source_headers()).get('Authorization', '')):
+                                 json.loads(source_headers()).get('Authorization', ''),
+                                 state_root=STATE_ROOT):
                 return
             self._route_post(path, self._read_body())
         except BrokenPipeError:
@@ -612,7 +615,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _route(self, path: str, query: dict, host: str, proto: str = "http"):
         if handle_manuscript(self, path, BOOKS_ROOT, EDIT_TOKEN,
-                             json.loads(source_headers()).get('Authorization', '')):
+                             json.loads(source_headers()).get('Authorization', ''),
+                             state_root=STATE_ROOT):
             return
         if path == "/health":
             return self._send({"ok": True, "books": len(list_books())})

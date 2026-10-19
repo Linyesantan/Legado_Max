@@ -124,6 +124,114 @@ def changes(num, filename, old, new):
             'added_lines': added_lines, 'removed_lines': removed_lines}
 
 
+def _hunks(base, other):
+    sm = difflib.SequenceMatcher(None, base, other, autojunk=False)
+    return [(i1, i2, other[j1:j2]) for tag, i1, i2, j1, j2 in sm.get_opcodes() if tag != 'equal']
+
+
+def _clash(x, y):
+    """两处按段落的改动是否落在同一位置；相邻但不重叠的段落可以各自保留。"""
+    if x[0] == x[1] and y[0] == y[1]:
+        return x[0] == y[0]
+    if x[0] == x[1]:
+        return y[0] < x[0] < y[1]
+    if y[0] == y[1]:
+        return x[0] < y[0] < x[1]
+    return x[0] < y[1] and y[0] < x[1]
+
+
+def _region(base, hunks, start, end):
+    out, cursor = [], start
+    for i1, i2, lines in hunks:
+        out.extend(base[cursor:i1])
+        out.extend(lines)
+        cursor = i2
+    out.extend(base[cursor:end])
+    return ''.join(out)
+
+
+_INDENT = ' \u3000\t'
+
+
+def _strip_lines(text):
+    return [l.lstrip(_INDENT) for l in text.splitlines(True)]
+
+
+def _indent_only(base_text, ai_text):
+    return base_text != ai_text and _strip_lines(base_text) == _strip_lines(ai_text)
+
+
+def _apply_indent(ai_text, user_text):
+    ai_lines = [l for l in ai_text.splitlines(True) if l.strip()]
+    prefix = ''
+    if ai_lines and all(l.startswith('\u3000\u3000') for l in ai_lines if not l.lstrip(_INDENT).startswith('#')):
+        prefix = '\u3000\u3000'
+    if not prefix:
+        return user_text
+    out = []
+    for l in user_text.splitlines(True):
+        body = l.lstrip(_INDENT)
+        out.append(prefix + body if body.strip() and not body.startswith('#') else l)
+    return ''.join(out)
+
+
+def merge3(base_raw, ai_raw, user_raw):
+    """按段落三方合并：不同段直接合并；同段改成一样只留一份；同段改得不同算冲突。
+
+    返回 (合并稿, 冲突列表)。冲突位置在合并稿里先采用用户版本，仅作预览。"""
+    base = base_raw.splitlines(True)
+    events = sorted([(h, 'ai') for h in _hunks(base, ai_raw.splitlines(True))] +
+                    [(h, 'user') for h in _hunks(base, user_raw.splitlines(True))],
+                    key=lambda e: (e[0][0], e[0][1]))
+    clusters = []
+    for hunk, side in events:
+        if clusters and any(_clash(hunk, h) for h, _ in clusters[-1]):
+            clusters[-1].append((hunk, side))
+        else:
+            clusters.append([(hunk, side)])
+    out, conflicts, cursor = [], [], 0
+    for cluster in clusters:
+        start = min(h[0] for h, _ in cluster)
+        end = max(h[1] for h, _ in cluster)
+        out.append(''.join(base[cursor:start]))
+        ai = [h for h, side in cluster if side == 'ai']
+        user = [h for h, side in cluster if side == 'user']
+        user_text = _region(base, user, start, end)
+        if ai and user:
+            ai_text = _region(base, ai, start, end)
+            base_text = ''.join(base[start:end])
+            if _indent_only(base_text, ai_text):
+                # AI 只规范了段首缩进：用用户正文，套上 AI 的缩进，不算冲突。
+                user_text = _apply_indent(ai_text, user_text)
+            elif ai_text != user_text:
+                conflicts.append({'line': start + 1, 'base': ''.join(base[start:end]),
+                                  'ai': ai_text, 'user': user_text})
+            out.append(user_text)
+        else:
+            out.append(_region(base, ai or user, start, end))
+        cursor = end
+    out.append(''.join(base[cursor:]))
+    return ''.join(out), conflicts
+
+
+def validate_text(text):
+    """写入前的通用校验：标题行存在、正文非空、无保留标识和控制字符。"""
+    if PREFIX in text or MAGIC in text:
+        raise Rejected('正文混入保留标识')
+    if not re.match(r'^# [^\n]+\n', text):
+        raise Rejected('首行必须是“# 标题”')
+    if not text.partition('\n')[2].strip():
+        raise Rejected('正文为空，拒绝整章清空')
+
+
+def encode_like(text, current):
+    """按现有文件的 BOM 和行尾写回，参照 save_auto。"""
+    output = text.replace('\n', '\r\n' if b'\r\n' in current else '\n').encode('utf-8')
+    if current.startswith(b'\xef\xbb\xbf'):
+        output = b'\xef\xbb\xbf' + output
+    return output
+
+
 def atomic(path, data, mode=0o600):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp = tempfile.mkstemp(prefix='.novel-', dir=path.parent)
@@ -188,6 +296,97 @@ class Store:
             raise Rejected('章节是硬链接：' + filename)
         return path
 
+    def item(self, number):
+        matches = [p.name for p in self.body.glob('*.md')
+                   if (m := re.fullmatch(r'第(\d+)章-.+\.md', p.name)) and int(m[1]) == number]
+        if len(matches) != 1:
+            raise Rejected(f'第{number}章缺失或章号重复')
+        return {'num': number, 'file': matches[0]}
+
+    def last_after(self, filename):
+        """history 里最后一次写这个文件后的快照；没有记录返回 None。"""
+        for (payload,) in self.db.execute("SELECT payload FROM records WHERE status='applied' ORDER BY rowid DESC"):
+            record = json.loads(payload)
+            for item in record.get('files') or []:
+                if item.get('file') == filename:
+                    return item['after']
+        return None
+
+    def note_external(self, item, data):
+        """绕过本工具改了正文：补一条 kind=external 记录，让 history 和 undo 都能看到。
+
+        判断依据是文件 sha 与 history 最后一次 after 不同；写回成功后 after 会更新，
+        所以同一次外部改动只会记录一次。"""
+        expected = self.last_after(item['file'])
+        if expected is None or digest(data) == expected:
+            return None
+        try:
+            before = self.read_blob(expected)
+        except (OSError, Rejected):
+            return None
+        try:
+            old_text = decode(before)
+        except Rejected:
+            old_text = ''
+        new_text = decode(data)
+        record = {'id': 'external-' + uuid.uuid4().hex, 'time': now(), 'status': 'applied',
+                  'kind': 'external', 'batch': None, 'undo_of': None,
+                  'files': [{'file': item['file'], 'num': item['num'],
+                             'mode': self.path(item['file']).stat().st_mode & 0o777,
+                             'before': expected, 'after': self.blob(data)}],
+                  'chapters': [changes(item['num'], item['file'], old_text, new_text)]}
+        record['totals'] = {k: sum(c[k] for c in record['chapters']) for k in
+                            ['added_chars', 'removed_chars', 'net_chars', 'added_lines', 'removed_lines']}
+        self.record(record, 'applied')
+        return record
+
+    def snapshot(self, number):
+        item = self.item(number)
+        data = self.path(item['file']).read_bytes()
+        self.note_external(item, data)
+        # 基准快照必须落盘：章节从没进过 history 时，write --base 也要能取回 base。
+        self.blob(data)
+        return {'chapter': number, 'file': item['file'], 'revision': digest(data), 'raw': decode(data)}
+
+    def write_ai(self, number, base, new_data):
+        """AI 改稿：基准一致直接写；否则与当前正文三方合并，冲突则不写。"""
+        if not isinstance(base, str) or not re.fullmatch(r'[a-f0-9]{64}', base):
+            raise Rejected('--base 必须是 64 位 sha256')
+        item = self.item(number)
+        current = self.path(item['file']).read_bytes()
+        self.note_external(item, current)
+        ai_raw = decode(new_data)
+        validate_text(ai_raw)
+        if digest(current) == base:
+            output = encode_like(ai_raw, current)
+            result = self.commit([(item, current, output)] if output != current else [], 'ai')
+            result.update(chapter=number, file=item['file'], revision=digest(output), merged=False)
+            return result
+        try:
+            base_raw = decode(self.read_blob(base))
+        except (OSError, Rejected):
+            raise Rejected('找不到基准快照 ' + base + '，请重新 snapshot')
+        current_raw = decode(current)
+        # 角色：base=基准，ai=AI 新稿，user=服务器当前内容（含手机改动）。
+        # 冲突时保留用户侧，AI 不能覆盖手机改过的段落。
+        merged, conflicts = merge3(base_raw, ai_raw, current_raw)
+        if conflicts:
+            record = {'id': 'conflict-' + uuid.uuid4().hex, 'time': now(), 'status': 'conflict',
+                      'kind': 'ai-conflict', 'chapter': number, 'file': item['file'],
+                      'base_revision': base, 'server_revision': digest(current),
+                      'base_raw': base_raw, 'server_raw': current_raw, 'ai_raw': ai_raw,
+                      'merged_preview': merged, 'conflicts': conflicts, 'server_changed': True}
+            self.record(record, 'conflict')
+            return {'status': 'conflict', 'id': record['id'], 'chapter': number,
+                    'file': item['file'], 'conflicts': conflicts,
+                    'base_raw': base_raw, 'server_raw': current_raw, 'ai_raw': ai_raw,
+                    'merged_preview': merged}
+        validate_text(merged)
+        output = encode_like(merged, current)
+        result = self.commit([(item, current, output)] if output != current else [], 'ai-merge')
+        result.update(chapter=number, file=item['file'], revision=digest(output), merged=True)
+        return result
+
     def export(self):
         batch = uuid.uuid4().hex
         items, texts = [], []
@@ -196,6 +395,7 @@ class Store:
             if not m:
                 raise Rejected('无法识别章节文件名：' + p.name)
             data = self.path(p.name).read_bytes()
+            self.note_external({'num': int(m[1]), 'file': p.name}, data)
             raw = decode(data)
             if PREFIX in raw or MAGIC in raw or not re.match(r'^# [^\n]+\n', raw):
                 raise Rejected('章节标题或保留标识异常：' + p.name)
@@ -408,6 +608,16 @@ def _render(r):
     return '\n'.join(lines)
 
 
+def render_conflict(r):
+    lines = [f"{r['id']}  第{r['chapter']}章 {r['file']}  status=conflict  {len(r['conflicts'])} 处冲突",
+             '正文未写入。三版对比：']
+    for c in r['conflicts']:
+        lines.append(f"\n@@ 基准 第 {c['line']} 行 @@\n{c['base'].rstrip()}")
+        lines.append(f"@@ 服务器当前（含手机改动，保留） @@\n{c['user'].rstrip()}")
+        lines.append(f"@@ AI 新稿（未采用） @@\n{c['ai'].rstrip()}")
+    return '\n'.join(lines)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--project', default=os.environ.get('NOVEL_PROJECT', str(Path.home() / 'books/novel')),
@@ -420,6 +630,12 @@ def main():
     for name in ['check', 'import']:
         p = sub.add_parser(name, help='仅校验' if name == 'check' else '校验并写回')
         p.add_argument('file')
+    p = sub.add_parser('snapshot', help='读取章节基准快照（只读，不改正文）')
+    p.add_argument('chapter', type=int)
+    p = sub.add_parser('write', help='按基准写入 AI 改稿；基准已变则三方合并，冲突不写')
+    p.add_argument('chapter', type=int)
+    p.add_argument('--base', required=True, help='snapshot 返回的 revision')
+    p.add_argument('--file', required=True, help='AI 新稿路径')
     p = sub.add_parser('changes', help='读取既有改动记录，默认最近一次')
     p.add_argument('id', nargs='?', default='latest')
     p.add_argument('--limit', type=int, default=1, help='一次读取最近 N 次记录，供写作上下文使用')
@@ -438,6 +654,14 @@ def main():
                 r = s.export()
             elif a.cmd in ('import', 'check'):
                 r = s.ingest(a.file, check=a.cmd == 'check')
+            elif a.cmd == 'snapshot':
+                r = s.snapshot(a.chapter)
+            elif a.cmd == 'write':
+                with Path(a.file).open('rb') as f:
+                    new_data = f.read(MAX_BYTES + 1)
+                if len(new_data) > MAX_BYTES:
+                    raise Rejected('文件超过 50 MiB')
+                r = s.write_ai(a.chapter, a.base, new_data)
             elif a.cmd == 'changes':
                 if a.limit < 1 or a.limit > 100:
                     raise Rejected('--limit 必须在 1 到 100 之间')
@@ -447,12 +671,17 @@ def main():
                 if pending:
                     r['open_conflicts'] = pending
             elif a.cmd == 'history':
-                r = {'status': 'history', 'records': [{k: v for k, v in x.items() if k not in ('files', 'chapters', 'base_raw', 'server_raw', 'edited_raw', 'merged_preview', 'merge')} for x in s.history(True)]}
+                r = {'status': 'history', 'records': [{k: v for k, v in x.items() if k not in ('files', 'chapters', 'base_raw', 'server_raw', 'edited_raw', 'ai_raw', 'merged_preview', 'merge', 'conflicts')} for x in s.history(True)]}
             elif a.cmd == 'resolve':
                 r = s.resolve(a.id)
             else:
                 r = s.undo(a.id)
-        print(json.dumps(r, ensure_ascii=False, indent=2) if a.json else render(r))
+        if r.get('status') == 'conflict':
+            print(json.dumps(r, ensure_ascii=False, indent=2) if a.json else render_conflict(r))
+            # 只有 write 把冲突当失败；changes 查询到历史冲突破仍是正常退出。
+            return 3 if a.cmd == 'write' else 0
+        human = not a.json and a.cmd != 'snapshot' and r.get('status') == 'applied'
+        print(json.dumps(r, ensure_ascii=False, indent=2) if not human else render(r))
         return 0
     except Rejected as e:
         print(json.dumps({'status': 'rejected', 'issues': e.issues}, ensure_ascii=False, indent=2))

@@ -11,11 +11,19 @@
 novel-roundtrip export                 # 导出整书批次 TXT
 novel-roundtrip check <TXT>            # 只校验
 novel-roundtrip import <TXT>           # 校验并写回
+novel-roundtrip snapshot <章号>        # 取 AI 改稿基准（revision + 原文）
+novel-roundtrip write <章号> --base <revision> --file <新稿>   # 带基准写回
 novel-roundtrip changes                # 最近一次改动，终端逐行对照
 novel-roundtrip --json changes         # 结构化记录，含冲突记录
 novel-roundtrip --json history
 novel-roundtrip undo <记录ID>
 ```
+
+PC 端 AI 改正文也必须走 `snapshot` → 临时新稿 → `write --base`，禁止直接写文件。
+基准没变直接写；基准已变（手机刚回传过）按段落三方合并，冲突时**以手机改动为准**、正文不写、
+退出码 3 并打印三版对比。三种情况都会进 history（`ai` / `ai-merge` / `ai-conflict`），可 undo。
+发现有人绕过工具直接改文件时，`snapshot`/`write`/`export`/服务端 `GET /manuscript` 会补一条
+`kind=external` 记录（before=上次记录的 after），同样可 undo。
 
 项目目录默认取环境变量 `NOVEL_PROJECT`（否则 `~/books/novel`），状态目录默认 `~/.local/state/novel-roundtrip/<项目目录名>`，也可用 `--project` / `--state` 指定。
 

@@ -265,8 +265,11 @@ class ReadBookViewModel(application: Application) : BaseViewModel(application) {
                             appDb.bookDao.replace(oldBook, book)
                             BookHelp.updateCacheFolder(oldBook, book)
                         }
+                        val oldChapters = appDb.bookChapterDao.getChapterList(oldBook.bookUrl)
                         appDb.bookChapterDao.delByBook(oldBook.bookUrl)
                         appDb.bookChapterDao.insert(*cList.toTypedArray())
+                        // 服务器正文变了 ?v 就变；阅读缓存不随 URL 失效，这里显式清掉。
+                        BookHelp.invalidateManuscriptCache(book, oldChapters, cList)
                         ReadBook.onChapterListUpdated(book)
                         return true
                     }.onFailure {
@@ -307,8 +310,10 @@ class ReadBookViewModel(application: Application) : BaseViewModel(application) {
                         appDb.bookDao.replace(oldBook, book)
                         BookHelp.updateCacheFolder(oldBook, book)
                     }
+                    val oldChapters = appDb.bookChapterDao.getChapterList(oldBook.bookUrl)
                     appDb.bookChapterDao.delByBook(oldBook.bookUrl)
                     appDb.bookChapterDao.insert(*chapters.toTypedArray())
+                    BookHelp.invalidateManuscriptCache(book, oldChapters, chapters)
                     ReadBook.onChapterListUpdated(book, isIncremental = false)
                 } else {
                     // 中间过程：增量保存章节到数据库，只刷新目录视图不加载正文

@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import uuid
 
-from novel_roundtrip import Store, Rejected, decode, digest
+from novel_roundtrip import Store, Rejected, decode, digest, merge3
 
 SCHEMA = 'novel-delta/1'
 MAX_PATCH = 2 * 1024 * 1024
@@ -52,107 +52,12 @@ def apply_operations(raw, operations):
     return result
 
 
-def _hunks(base, other):
-    sm = difflib.SequenceMatcher(None, base, other, autojunk=False)
-    return [(i1, i2, other[j1:j2]) for tag, i1, i2, j1, j2 in sm.get_opcodes() if tag != 'equal']
-
-
-def _clash(x, y):
-    """两处按段落的改动是否落在同一位置；相邻但不重叠的段落可以各自保留。"""
-    if x[0] == x[1] and y[0] == y[1]:
-        return x[0] == y[0]
-    if x[0] == x[1]:
-        return y[0] < x[0] < y[1]
-    if y[0] == y[1]:
-        return x[0] < y[0] < x[1]
-    return x[0] < y[1] and y[0] < x[1]
-
-
-def _region(base, hunks, start, end):
-    out, cursor = [], start
-    for i1, i2, lines in hunks:
-        out.extend(base[cursor:i1])
-        out.extend(lines)
-        cursor = i2
-    out.extend(base[cursor:end])
-    return ''.join(out)
-
-
-_INDENT = ' \u3000\t'
-
-
-def _strip_lines(text):
-    return [l.lstrip(_INDENT) for l in text.splitlines(True)]
-
-
-def _indent_only(base_text, ai_text):
-    return base_text != ai_text and _strip_lines(base_text) == _strip_lines(ai_text)
-
-
-def _apply_indent(ai_text, user_text):
-    ai_lines = [l for l in ai_text.splitlines(True) if l.strip()]
-    prefix = ''
-    if ai_lines and all(l.startswith('\u3000\u3000') for l in ai_lines if not l.lstrip(_INDENT).startswith('#')):
-        prefix = '\u3000\u3000'
-    if not prefix:
-        return user_text
-    out = []
-    for l in user_text.splitlines(True):
-        body = l.lstrip(_INDENT)
-        out.append(prefix + body if body.strip() and not body.startswith('#') else l)
-    return ''.join(out)
-
-
-def merge3(base_raw, ai_raw, user_raw):
-    """按段落三方合并：不同段直接合并；同段改成一样只留一份；同段改得不同算冲突。
-
-    返回 (合并稿, 冲突列表)。冲突位置在合并稿里先采用用户版本，仅作预览。"""
-    base = base_raw.splitlines(True)
-    events = sorted([(h, 'ai') for h in _hunks(base, ai_raw.splitlines(True))] +
-                    [(h, 'user') for h in _hunks(base, user_raw.splitlines(True))],
-                    key=lambda e: (e[0][0], e[0][1]))
-    clusters = []
-    for hunk, side in events:
-        if clusters and any(_clash(hunk, h) for h, _ in clusters[-1]):
-            clusters[-1].append((hunk, side))
-        else:
-            clusters.append([(hunk, side)])
-    out, conflicts, cursor = [], [], 0
-    for cluster in clusters:
-        start = min(h[0] for h, _ in cluster)
-        end = max(h[1] for h, _ in cluster)
-        out.append(''.join(base[cursor:start]))
-        ai = [h for h, side in cluster if side == 'ai']
-        user = [h for h, side in cluster if side == 'user']
-        user_text = _region(base, user, start, end)
-        if ai and user:
-            ai_text = _region(base, ai, start, end)
-            base_text = ''.join(base[start:end])
-            if _indent_only(base_text, ai_text):
-                # AI 只规范了段首缩进：用用户正文，套上 AI 的缩进，不算冲突。
-                user_text = _apply_indent(ai_text, user_text)
-            elif ai_text != user_text:
-                conflicts.append({'line': start + 1, 'base': ''.join(base[start:end]),
-                                  'ai': ai_text, 'user': user_text})
-            out.append(user_text)
-        else:
-            out.append(_region(base, ai or user, start, end))
-        cursor = end
-    out.append(''.join(base[cursor:]))
-    return ''.join(out), conflicts
-
-
 class DeltaStore(Store):
-    def item(self, number):
-        matches = [p.name for p in self.body.glob('*.md')
-                   if (m := re.fullmatch(r'第(\d+)章-.+\.md', p.name)) and int(m[1]) == number]
-        if len(matches) != 1:
-            raise Rejected(f'第{number}章缺失或章号重复')
-        return {'num': number, 'file': matches[0]}
-
     def snapshot(self, number, secret):
         item = self.item(number)
         data = self.path(item['file']).read_bytes()
+        # 有人绕过本工具直接改文件时补一条 external 记录，保证 history/undo 看得到。
+        self.note_external(item, data)
         # 导出与回写都保留原文件 BOM 和一致的行尾，不猜混合换行。
         if b'\r' in data.replace(b'\r\n', b'') or (b'\r\n' in data and b'\n' in data.replace(b'\r\n', b'')):
             raise Rejected('源章节使用混合换行，拒绝无损校验不明确的改稿')

@@ -14,6 +14,7 @@ import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
 import io.legado.app.help.config.AppConfig
 import io.legado.app.model.analyzeRule.AnalyzeUrl
+import io.legado.app.model.localBook.CloudManuscript
 import io.legado.app.model.localBook.LocalBook
 import io.legado.app.utils.ArchiveUtils
 import io.legado.app.utils.FileUtils
@@ -459,6 +460,21 @@ object BookHelp {
             return string
         }
         return null
+    }
+
+    /**
+     * 目录更新后，同一序号的章节 URL 变了（?v=<内容 sha> 不同）说明服务器正文已改写。
+     * 阅读缓存文件名只含 序号+标题MD5，不会随 URL 失效，必须显式删除。
+     */
+    fun invalidateManuscriptCache(book: Book, oldChapters: List<BookChapter>, newChapters: List<BookChapter>) {
+        if (oldChapters.isEmpty() || newChapters.isEmpty()) return
+        val oldByIndex = oldChapters.associateBy { it.index }
+        for (chapter in newChapters) {
+            val old = oldByIndex[chapter.index] ?: continue
+            if (old.url != chapter.url && CloudManuscript.endpoint(chapter.url) != null) {
+                delContent(book, chapter)
+            }
+        }
     }
 
     /**

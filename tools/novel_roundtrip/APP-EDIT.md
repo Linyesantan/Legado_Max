@@ -63,5 +63,5 @@ novel-roundtrip --json changes --limit 20  # 最近多次
 novel-roundtrip undo <记录ID>             # 恢复已写入的改动
 ```
 
-记录类型：`phone` 直接写入，`phone-merge` 自动合并写入，`phone-conflict` 冲突未写入，`undo` 人工恢复。
+记录类型：`phone` 直接写入，`phone-merge` 自动合并写入，`phone-conflict` 冲突未写入，`undo` 人工恢复；PC 端 AI 走 `snapshot`/`write`，对应 `ai`、`ai-merge`、`ai-conflict`；绕过工具直接改文件会补 `external`。
 AI 写作模式接入见 [ai-skills/](ai-skills/)。

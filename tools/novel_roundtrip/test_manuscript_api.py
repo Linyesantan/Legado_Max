@@ -235,7 +235,53 @@ class DeltaTests(unittest.TestCase):
             p=self.payload();self.assertEqual('applied',call(p)['status'])
             self.assertEqual('duplicate',call(p)['status'])
             self.assertEqual(self.raw.replace('旧','新'),call()['raw'])
+            # 有人绕过接口直接改文件：下一次 GET /manuscript 必须补 external 记录
+            self.file.write_text(self.raw.replace('旧','新')+'外部覆盖',encoding='utf-8')
+            self.assertEqual(self.raw.replace('旧','新')+'外部覆盖',call()['raw'])
+            self.assertEqual('external',self.s.history()[0]['kind'])
+            self.assertTrue((outer.root/'state'/'demo'/'history.sqlite3').is_file())
         finally:server.shutdown();server.server_close();t.join()
 
 
 if __name__=='__main__': unittest.main()
+
+
+class ServerStateRootTests(unittest.TestCase):
+    """novel-source-server 必须把 NOVEL_STATE_ROOT 透传给改稿接口。"""
+
+    def test_env_state_root_used_by_manuscript_get(self):
+        import base64, os, socket, subprocess, sys, tempfile, time
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project = root/'books'/'demo'
+            (project/'正文').mkdir(parents=True)
+            (project/'正文'/'第0001章-测试.md').write_text('# 第1章 测试\n\n正文。\n', encoding='utf-8')
+            auth_file = root/'gateway-auth'
+            auth_file.write_text('user:pass', encoding='utf-8')
+            state_root = root/'alt-state'
+            sock = socket.socket(); sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]; sock.close()
+            env = dict(os.environ, NOVEL_STATE_ROOT=str(state_root), NOVEL_BOOKS_ROOT=str(root/'books'),
+                       NOVEL_EDIT_TOKEN='token', NOVEL_GATEWAY_AUTH_FILE=str(auth_file))
+            server = subprocess.Popen([sys.executable, str(Path(__file__).with_name('server')/'novel_source_server.py'),
+                                       '--port', str(port), '--host', '127.0.0.1', '--books-root', str(root/'books')],
+                                      env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                opener = build_opener(ProxyHandler({}))
+                url = f'http://127.0.0.1:{port}/manuscript/demo/1'
+                header = {'Authorization': 'Basic ' + base64.b64encode(b'user:pass').decode()}
+                payload = None
+                for _ in range(40):
+                    try:
+                        req = Request(url, headers=header)
+                        with opener.open(req, timeout=2) as r:
+                            payload = json.load(r)
+                        break
+                    except Exception:
+                        time.sleep(0.1)
+                self.assertIsNotNone(payload)
+                self.assertEqual('# 第1章 测试\n\n正文。\n', payload['raw'])
+                self.assertTrue((state_root/'demo'/'history.sqlite3').is_file())
+                self.assertFalse((Path.home()/'.local/state/novel-roundtrip/demo').exists())
+            finally:
+                server.terminate(); server.wait()
