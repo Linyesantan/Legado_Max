@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="manuscript_word_count">正文 %1$d 字（不含空白）</string>
+</resources>

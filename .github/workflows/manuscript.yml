@@ -28,6 +28,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: 阅读Max-改稿版
+          retention-days: 3
           path: app/build/outputs/apk/appS/release/*.apk
           if-no-files-found: error
       - name: Verify release Gson models survive R8
@@ -35,5 +36,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: 改稿版-混淆映射
+          retention-days: 3
           path: app/build/outputs/mapping/appSRelease/mapping.txt
           if-no-files-found: error

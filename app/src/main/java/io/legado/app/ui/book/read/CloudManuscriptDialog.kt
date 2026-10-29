@@ -101,7 +101,14 @@ class CloudManuscriptDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
             }
             true
         }
-        binding.contentView.addTextChangedListener { if (!busy) model.body = it?.toString().orEmpty() }
+        binding.contentView.addTextChangedListener {
+            val body = it?.toString().orEmpty()
+            if (!busy) model.body = body
+            val counted = body.filterNot { char -> char.isWhitespace() }
+            val count = counted.codePointCount(0, counted.length)
+            binding.tvWordCount.text = getString(R.string.manuscript_word_count, count)
+            binding.tvWordCount.visibility = View.VISIBLE
+        }
         load(false)
     }
 

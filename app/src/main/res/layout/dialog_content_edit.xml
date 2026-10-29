@@ -16,6 +16,18 @@
         app:title="edit"
         app:titleTextAppearance="@style/ToolbarTitle" />
 
+    <TextView
+        android:id="@+id/tv_word_count"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/background_card"
+        android:paddingStart="12dp"
+        android:paddingTop="6dp"
+        android:paddingEnd="12dp"
+        android:paddingBottom="6dp"
+        android:textSize="14sp"
+        android:visibility="gone" />
+
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
