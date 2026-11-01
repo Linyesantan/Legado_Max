@@ -416,13 +416,14 @@ object WebBook {
             if (runPerJs) {
                 runPreUpdateJs(bookSource, book, isFromBookInfo).getOrThrow()
             }
-            if (book.bookUrl == book.tocUrl && !book.tocHtml.isNullOrEmpty()) {
+            val tocHtml = book.takeTocHtml()
+            if (tocHtml != null) {
                 BookChapterList.analyzeChapterList(
                     bookSource = bookSource,
                     book = book,
                     baseUrl = book.tocUrl,
                     redirectUrl = book.tocUrl,
-                    body = book.tocHtml,
+                    body = tocHtml,
                     isFromBookInfo = isFromBookInfo
                 )
             } else {
@@ -499,13 +500,14 @@ object WebBook {
         if (runPerJs) {
             runPreUpdateJs(bookSource, book, isFromBookInfo).getOrThrow()
         }
-        return if (book.bookUrl == book.tocUrl && !book.tocHtml.isNullOrEmpty()) {
+        val tocHtml = book.takeTocHtml()
+        return if (tocHtml != null) {
             BookChapterList.analyzeChapterListFlow(
                 bookSource = bookSource,
                 book = book,
                 baseUrl = book.tocUrl,
                 redirectUrl = book.tocUrl,
-                body = book.tocHtml,
+                body = tocHtml,
                 isFromBookInfo = isFromBookInfo
             )
         } else {

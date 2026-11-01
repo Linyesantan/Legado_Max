@@ -436,9 +436,7 @@ object BookInfo {
             val originalTocUrl = book.tocUrl
             book.tocUrl = analyzeRule.getString(infoRule.tocUrl, isUrl = true)
             if (book.tocUrl.isEmpty()) book.tocUrl = baseUrl
-            if (book.tocUrl == baseUrl) {
-                book.tocHtml = body
-            }
+            book.tocHtml = body.takeIf { book.tocUrl == baseUrl }
             Debug.log(bookSource.bookSourceUrl, "└${book.tocUrl}")
             
             FlowLogRecorder.logExtract(

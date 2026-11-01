@@ -28,6 +28,7 @@ import io.legado.app.model.ImageProvider
 import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadBook
 import io.legado.app.model.SourceCallBack
+import io.legado.app.model.localBook.CloudManuscript
 import io.legado.app.model.localBook.LocalBook
 import io.legado.app.model.webBook.PartialChapterList
 import io.legado.app.model.webBook.WebBook
@@ -51,6 +52,7 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.onEmpty
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileNotFoundException
@@ -160,6 +162,12 @@ class ReadBookViewModel(application: Application) : BaseViewModel(application) {
                 if (!loadChapterListAwait(book)) {
                     return
                 }
+            }
+        } else if (!book.isLocal && book.canUpdate) {
+            val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, book.durChapterIndex)
+            if (chapter != null && CloudManuscript.endpoint(chapter.url) != null) {
+                // Cloud drafts grow between reading sessions; keep cached chapters on failure/offline.
+                withTimeoutOrNull(8_000L) { loadChapterListAwait(book) }
             }
         }
         ReadBook.upMsg(null)
