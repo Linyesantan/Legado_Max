@@ -219,7 +219,8 @@ class SnapshotWriteTests(unittest.TestCase):
 
     def test_snapshot_returns_base_revision(self):
         snap = self.snap()
-        self.assertEqual({'chapter', 'file', 'revision', 'raw'}, set(snap))
+        self.assertEqual({'chapter', 'file', 'revision', 'raw', 'annotations'}, set(snap))
+        self.assertEqual([], snap['annotations'])
         self.assertEqual(nr.digest(self.file.read_bytes()), snap['revision'])
         self.assertEqual(self.base, snap['raw'])
 
@@ -313,6 +314,95 @@ class SnapshotWriteTests(unittest.TestCase):
         self.assertEqual(1, len([x for x in self.store.history() if x['kind'] == 'external']))
 
 
+class AnnotationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.project = root / 'book'
+        body = self.project / '正文'
+        body.mkdir(parents=True)
+        self.file = body / '第0001章-开始.md'
+        self.raw = '# 第1章 开始\n\n　　双眼紧闭。\n\n　　第二段。\n'
+        self.file.write_bytes(b'\xef\xbb\xbf' + self.raw.replace('\n', '\r\n').encode())
+        self.original = self.file.read_bytes()
+        self.store = nr.Store(self.project, root / 'state')
+        self.base = nr.digest(self.original)
+
+    def tearDown(self):
+        self.store.db.close()
+        self.temp.cleanup()
+
+    def add(self):
+        return self.store.annotate(1, self.base, '双眼紧闭', '双眸→双眼（用户修改）')['annotation']
+
+    def test_lifecycle_persistence_and_manuscript_isolation(self):
+        note = self.add()
+        self.assertEqual(1, note['version'])
+        self.store.db.close()
+        self.store = nr.Store(self.project, Path(self.temp.name) / 'state')
+        listed = self.store.annotations(1)['annotations']
+        self.assertEqual(note['id'], listed[0]['id'])
+        self.assertEqual(3, listed[0]['line'])
+        self.assertEqual('matched', listed[0]['location_status'])
+        self.assertFalse(listed[0]['revision_changed'])
+        self.assertEqual(listed, self.store.snapshot(1)['annotations'])
+        updated = self.store.annotate(1, self.base, '双眼紧闭', '用户用词：双眼',
+                                      note['id'], note['version'])['annotation']
+        self.assertEqual(2, updated['version'])
+        self.assertEqual(1, len(self.store.annotations(1)['annotations']))
+        self.assertNotIn('用户用词', Path(self.store.export()['file']).read_text())
+        self.store.unannotate(1, note['id'], updated['version'])
+        self.assertEqual([], self.store.annotations(1)['annotations'])
+        self.assertEqual(self.original, self.file.read_bytes())
+        self.assertEqual([], self.store.history())
+
+    def test_stale_chapter_and_note_versions_rejected(self):
+        note = self.add()
+        with self.assertRaisesRegex(nr.Rejected, '版本不匹配'):
+            self.store.annotate(1, self.base, '双眼紧闭', '新版', note['id'], 0)
+        with self.assertRaisesRegex(nr.Rejected, '版本不匹配'):
+            self.store.unannotate(1, note['id'], 0)
+        self.file.write_text(self.raw + '新增段落。\n')
+        with self.assertRaisesRegex(nr.Rejected, '章节版本已变化'):
+            self.store.annotate(1, self.base, '双眼紧闭', '过时批注')
+        self.assertEqual(1, len(self.store.annotations(1)['annotations']))
+
+    def test_anchor_moves_or_disappears_without_guessing(self):
+        self.add()
+        self.file.write_text(self.raw.replace('\n\n', '\n\n新增。\n', 1))
+        note = self.store.annotations(1)['annotations'][0]
+        self.assertEqual(4, note['line'])
+        self.assertTrue(note['revision_changed'])
+        self.file.write_text(self.raw.replace('双眼紧闭', '睁开眼睛'))
+        note = self.store.annotations(1)['annotations'][0]
+        self.assertEqual('missing', note['location_status'])
+        self.assertIsNone(note['line'])
+        self.file.write_text(self.raw + '双眼紧闭\n')
+        self.assertEqual('ambiguous', self.store.annotations(1)['annotations'][0]['location_status'])
+
+    def test_invalid_notes_and_nonunique_anchors_rejected(self):
+        for anchor, text in [('', '批注'), ('不存在', '批注'), ('　　', '批注'),
+                             ('双眼紧闭', ''), ('双眼紧闭', '多行\n批注'),
+                             ('双眼紧闭', '字' * 241)]:
+            with self.subTest(anchor=anchor, text=text):
+                with self.assertRaises(nr.Rejected):
+                    self.store.annotate(1, self.base, anchor, text)
+        self.assertEqual([], self.store.annotations(1)['annotations'])
+        self.assertEqual(self.original, self.file.read_bytes())
+
+    def test_chapters_and_projects_are_isolated(self):
+        note = self.add()
+        (self.file.parent / '第0002章-接续.md').write_text('# 第2章 接续\n\n双眼紧闭。\n')
+        self.assertEqual([], self.store.annotations(2)['annotations'])
+        with self.assertRaisesRegex(nr.Rejected, '没有这条'):
+            self.store.unannotate(2, note['id'], 1)
+        other = nr.Store(self.project, Path(self.temp.name) / 'other-state')
+        try:
+            self.assertEqual([], other.annotations(1)['annotations'])
+        finally:
+            other.db.close()
+
+
 class SnapshotWriteCliTests(unittest.TestCase):
     """命令行契约：snapshot 输出 JSON；冲突退出码非 0 且不写文件。"""
 
@@ -335,7 +425,43 @@ class SnapshotWriteCliTests(unittest.TestCase):
 
     def run_cli(self, *args):
         return self.subprocess.run([sys.executable, self.script, *args], capture_output=True,
-                                   text=True, env=self.env)
+                                   text=True, env=self.env, timeout=10)
+
+    def test_annotation_cli_lifecycle(self):
+        snap = json.loads(self.run_cli('snapshot', '1').stdout)
+        self.assertEqual([], snap['annotations'])
+        result = self.run_cli('annotate', '1', '--base', snap['revision'],
+                              '--anchor', '原文', '--text', '用户用词')
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        note = json.loads(result.stdout)['annotation']
+        updated = self.run_cli('annotate', '1', '--base', snap['revision'], '--anchor', '原文',
+                               '--text', '新版批注', '--id', note['id'], '--version', '1')
+        self.assertEqual(0, updated.returncode, updated.stdout + updated.stderr)
+        listed = json.loads(self.run_cli('--json', 'annotations', '1').stdout)['annotations']
+        self.assertEqual('新版批注', listed[0]['text'])
+        self.assertEqual(2, listed[0]['version'])
+        stale = self.run_cli('unannotate', '1', note['id'], '--version', '1')
+        self.assertEqual(2, stale.returncode)
+        deleted = self.run_cli('unannotate', '1', note['id'], '--version', '2')
+        self.assertEqual(0, deleted.returncode, deleted.stdout + deleted.stderr)
+        self.assertEqual([], json.loads(self.run_cli('annotations', '1').stdout)['annotations'])
+        self.assertEqual(self.base, self.file.read_text())
+
+    def test_annotation_commands_do_not_recover_manuscript_transactions(self):
+        store = nr.Store(self.project, self.env['NOVEL_STATE'])
+        after = self.base.replace('原文', '未完成事务稿').encode()
+        store.record({'id': 'crash', 'files': [{'file': self.file.name,
+                      'before': store.blob(self.base.encode()), 'after': store.blob(after),
+                      'mode': 0o644}]}, 'pending')
+        store.db.close()
+        self.file.write_bytes(after)
+        added = self.run_cli('annotate', '1', '--base', nr.digest(after),
+                             '--anchor', '未完成事务稿', '--text', '测试批注')
+        self.assertEqual(0, added.returncode, added.stdout + added.stderr)
+        note = json.loads(added.stdout)['annotation']
+        self.assertEqual(0, self.run_cli('annotations', '1').returncode)
+        self.assertEqual(0, self.run_cli('unannotate', '1', note['id'], '--version', '1').returncode)
+        self.assertEqual(after, self.file.read_bytes())
 
     def test_snapshot_then_write_and_conflict_exit_code(self):
         snap = self.run_cli('snapshot', '1')

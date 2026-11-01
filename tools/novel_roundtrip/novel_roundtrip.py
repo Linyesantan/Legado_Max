@@ -264,13 +264,16 @@ class Store:
         self.db.execute('PRAGMA synchronous=FULL')
         self.db.execute('CREATE TABLE IF NOT EXISTS records (id TEXT PRIMARY KEY, status TEXT, payload TEXT)')
         self.db.execute('CREATE TABLE IF NOT EXISTS receipts (sha TEXT PRIMARY KEY, result TEXT)')
+        self.db.execute('CREATE TABLE IF NOT EXISTS annotations '
+                        '(id TEXT PRIMARY KEY, chapter INTEGER NOT NULL, payload TEXT NOT NULL)')
         self.db.commit()
 
     @contextlib.contextmanager
-    def locked(self):
+    def locked(self, recover=True):
         with (self.state / 'lock').open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            self.recover()
+            if recover:
+                self.recover()
             yield
 
     def blob(self, data):
@@ -346,7 +349,68 @@ class Store:
         self.note_external(item, data)
         # 基准快照必须落盘：章节从没进过 history 时，write --base 也要能取回 base。
         self.blob(data)
-        return {'chapter': number, 'file': item['file'], 'revision': digest(data), 'raw': decode(data)}
+        return {'chapter': number, 'file': item['file'], 'revision': digest(data), 'raw': decode(data),
+                'annotations': self.annotations(number, data)['annotations']}
+
+    def annotations(self, number, data=None):
+        item = self.item(number)
+        if data is None:
+            data = self.path(item['file']).read_bytes()
+        raw, revision = decode(data), digest(data)
+        notes = []
+        for (payload,) in self.db.execute(
+                'SELECT payload FROM annotations WHERE chapter=? ORDER BY rowid', (number,)):
+            note = json.loads(payload)
+            count = raw.count(note['anchor'])
+            note['location_status'] = 'matched' if count == 1 else 'missing' if count == 0 else 'ambiguous'
+            note['line'] = raw.count('\n', 0, raw.index(note['anchor'])) + 1 if count == 1 else None
+            note['revision_changed'] = note['revision'] != revision
+            notes.append(note)
+        return {'status': 'annotations', 'chapter': number, 'revision': revision, 'annotations': notes}
+
+    def annotate(self, number, base, anchor, text, key=None, version=None):
+        """批注只存独立状态库；正文基准和批注版本都一致时才接受修改。"""
+        item = self.item(number)
+        data = self.path(item['file']).read_bytes()
+        if digest(data) != base:
+            raise Rejected('章节版本已变化，请重新 snapshot 后批注')
+        if (not isinstance(anchor, str) or not anchor.strip() or len(anchor) > 4000
+                or '\x00' in anchor or '\ufeff' in anchor):
+            raise Rejected('批注锚点须为非空原文，最多 4000 字')
+        if decode(data).count(anchor) != 1:
+            raise Rejected('批注锚点须在当前章节唯一匹配，请补充上下文')
+        if (not isinstance(text, str) or not text.strip() or len(text) > 240
+                or any(c in text for c in '\r\n\x00\ufeff')):
+            raise Rejected('批注须为非空单行文本，最多 240 字')
+        if key is None:
+            if version is not None:
+                raise Rejected('新批注不接受 --version')
+            note = {'id': 'note-' + uuid.uuid4().hex, 'chapter': number, 'version': 0,
+                    'created': now()}
+        else:
+            note = self.annotation(number, key, version)
+        note.update(anchor=anchor, text=text.strip(), revision=base,
+                    version=note['version'] + 1, updated=now())
+        self.db.execute('INSERT OR REPLACE INTO annotations VALUES (?,?,?)',
+                        (note['id'], number, json.dumps(note, ensure_ascii=False)))
+        self.db.commit()
+        return {'status': 'annotated', 'annotation': note}
+
+    def annotation(self, number, key, version):
+        row = self.db.execute('SELECT payload FROM annotations WHERE chapter=? AND id=?',
+                              (number, key)).fetchone()
+        if row is None:
+            raise Rejected('没有这条章节批注：' + key)
+        note = json.loads(row[0])
+        if type(version) is not int or version != note['version']:
+            raise Rejected('批注版本不匹配，请重新读取 annotations 后再修改')
+        return note
+
+    def unannotate(self, number, key, version):
+        self.annotation(number, key, version)
+        self.db.execute('DELETE FROM annotations WHERE chapter=? AND id=?', (number, key))
+        self.db.commit()
+        return {'status': 'annotation-deleted', 'chapter': number, 'id': key}
 
     def write_ai(self, number, base, new_data):
         """AI 改稿：基准一致直接写；否则与当前正文三方合并，冲突则不写。"""
@@ -636,6 +700,19 @@ def main():
     p.add_argument('chapter', type=int)
     p.add_argument('--base', required=True, help='snapshot 返回的 revision')
     p.add_argument('--file', required=True, help='AI 新稿路径')
+    p = sub.add_parser('annotations', help='读取独立章节批注及当前锚点位置，不改正文')
+    p.add_argument('chapter', type=int)
+    p = sub.add_parser('annotate', help='新增或修改章节批注，不改正文')
+    p.add_argument('chapter', type=int)
+    p.add_argument('--base', required=True, help='当前章节 revision')
+    p.add_argument('--anchor', required=True, help='当前正文中唯一匹配的原文片段')
+    p.add_argument('--text', required=True, help='简洁批注，单行且不超过 240 字')
+    p.add_argument('--id', help='修改已有批注时指定其 id')
+    p.add_argument('--version', type=int, help='修改已有批注时必须指定其当前 version')
+    p = sub.add_parser('unannotate', help='删除章节批注，不改正文')
+    p.add_argument('chapter', type=int)
+    p.add_argument('id')
+    p.add_argument('--version', type=int, required=True)
     p = sub.add_parser('changes', help='读取既有改动记录，默认最近一次')
     p.add_argument('id', nargs='?', default='latest')
     p.add_argument('--limit', type=int, default=1, help='一次读取最近 N 次记录，供写作上下文使用')
@@ -648,7 +725,8 @@ def main():
     try:
         s = Store(a.project, a.state or str(Path.home() / '.local/state/novel-roundtrip' / Path(a.project).name))
         # 查询只读取已提交记录，连未完成事务的正文恢复也留给写入类命令。
-        manager = contextlib.nullcontext() if a.cmd in ('changes', 'history') else s.locked()
+        manager = (contextlib.nullcontext() if a.cmd in ('changes', 'history', 'annotations')
+                   else s.locked(recover=a.cmd not in ('annotate', 'unannotate')))
         with manager:
             if a.cmd == 'export':
                 r = s.export()
@@ -656,6 +734,12 @@ def main():
                 r = s.ingest(a.file, check=a.cmd == 'check')
             elif a.cmd == 'snapshot':
                 r = s.snapshot(a.chapter)
+            elif a.cmd == 'annotations':
+                r = s.annotations(a.chapter)
+            elif a.cmd == 'annotate':
+                r = s.annotate(a.chapter, a.base, a.anchor, a.text, a.id, a.version)
+            elif a.cmd == 'unannotate':
+                r = s.unannotate(a.chapter, a.id, a.version)
             elif a.cmd == 'write':
                 with Path(a.file).open('rb') as f:
                     new_data = f.read(MAX_BYTES + 1)
