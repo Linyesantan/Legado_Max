@@ -33,6 +33,7 @@ import io.legado.app.data.entities.rule.SearchRule
 import io.legado.app.help.AppFreezeMonitor
 import io.legado.app.help.AppWebDav
 import io.legado.app.help.CrashHandler
+import io.legado.app.help.curfew.CurfewGate
 import io.legado.app.help.DefaultData
 import io.legado.app.help.DispatchersMonitor
 import io.legado.app.help.LifecycleHelp
@@ -78,6 +79,7 @@ class App : Application() {
         applyDayNightInit(this)
         LauncherIconHelp.fixLauncherIconPref()
         registerActivityLifecycleCallbacks(LifecycleHelp)
+        CurfewGate.init(this)
         defaultSharedPreferences.registerOnSharedPreferenceChangeListener(AppConfig)
         Coroutine.async {
             LogUtils.init(this@App)

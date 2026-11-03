@@ -22,7 +22,10 @@ jobs:
       - name: Test server roundtrip
         run: python3 -m unittest discover -s tools/novel_roundtrip -v
       - name: Test and build coexist APK
+        env:
+          CURFEW_STATUS_URL: ${{ vars.CURFEW_STATUS_URL }}
         run: |
+          test -n "$CURFEW_STATUS_URL" || { echo 'Missing required curfew endpoint'; exit 1; }
           chmod +x gradlew
           ./gradlew :app:testAppSReleaseUnitTest :app:assembleAppSRelease --stacktrace
       - uses: actions/upload-artifact@v4
