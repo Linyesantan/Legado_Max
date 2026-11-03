@@ -3,6 +3,7 @@ package io.legado.app.help.curfew
 import android.app.Activity
 import android.app.Application
 import android.app.Dialog
+import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
@@ -39,6 +40,9 @@ object CurfewGate : Application.ActivityLifecycleCallbacks {
     private val epoch = AtomicLong()
     private val screens = IdentityHashMap<Activity, Pair<Dialog, TextView>>()
     private val started = mutableSetOf<Activity>()
+    private var foreground: Activity? = null
+    private var lockActivity: CurfewLockActivity? = null
+    private var launchingLock = false
     @Volatile private var lease: CurfewLease? = null
     @Volatile private var call: Call? = null
     private var checking = true
@@ -99,22 +103,40 @@ object CurfewGate : Application.ActivityLifecycleCallbacks {
     private fun updateScreens(app: Application) {
         val blocked = blocked()
         if (blocked && BaseReadAloudService.isRun) ReadAloud.stop(app)
+        val message = when {
+            checking -> R.string.curfew_checking
+            lease?.active == true -> R.string.curfew_active
+            else -> R.string.curfew_unavailable
+        }
+        lockActivity?.let {
+            if (blocked) it.updateMessage(message) else if (!it.isFinishing) it.finish()
+        }
         screens.forEach { (activity, screen) ->
             if (!activity.isFinishing && !activity.isDestroyed) {
                 if (blocked) {
-                    screen.second.setText(when {
-                        checking -> R.string.curfew_checking
-                        lease?.active == true -> R.string.curfew_active
-                        else -> R.string.curfew_unavailable
-                    })
+                    screen.second.setText(message)
                     if (!screen.first.isShowing) screen.first.show()
                     screen.first.window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
                 } else if (screen.first.isShowing) screen.first.dismiss()
             }
         }
+        val activity = foreground
+        if (blocked && activity != null && activity !is CurfewLockActivity &&
+            !activity.isFinishing && !activity.isDestroyed && !launchingLock) {
+            // Pausing the reader also prevents its dialogs from covering the gate.
+            launchingLock = true
+            activity.startActivity(Intent(activity, CurfewLockActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            })
+        }
     }
 
     override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
+        if (activity is CurfewLockActivity) {
+            lockActivity = activity
+            launchingLock = false
+            return
+        }
         val label = TextView(activity).apply {
             textSize = 22f
             gravity = Gravity.CENTER
@@ -154,12 +176,19 @@ object CurfewGate : Application.ActivityLifecycleCallbacks {
         updateScreens(activity.application)
     }
 
-    override fun onActivityResumed(activity: Activity) = updateScreens(activity.application)
+    override fun onActivityResumed(activity: Activity) {
+        foreground = activity
+        updateScreens(activity.application)
+    }
     override fun onActivityStopped(activity: Activity) { started.remove(activity) }
     override fun onActivityDestroyed(activity: Activity) {
         started.remove(activity)
+        if (foreground === activity) foreground = null
+        if (lockActivity === activity) lockActivity = null
         screens.remove(activity)?.first?.dismiss()
     }
-    override fun onActivityPaused(activity: Activity) = Unit
+    override fun onActivityPaused(activity: Activity) {
+        if (foreground === activity) foreground = null
+    }
     override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
 }
