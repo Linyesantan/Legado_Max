@@ -9,14 +9,25 @@ class CurfewLeaseTest {
     private fun body(active: String = "false", available: String = "true", ttl: Long = 6000) =
         """{"schema":"curfew/1","nonce":"test","available":$available,"active":$active,"lease_ms":$ttl,"revision":"$revision"}"""
 
-    @Test fun leaseExpiresUsingMonotonicTime() {
+    @Test fun inactiveNeverBlocksEvenAfterExpiry() {
         val lease = CurfewLease.parse(body(), "test", 10000)
         assertFalse(lease.blocked(15999))
-        assertTrue(lease.blocked(16000))
+        assertFalse(lease.blocked(16000))
     }
 
-    @Test fun activeAlwaysBlocks() {
+    @Test fun freshActiveObservationBlocks() {
         assertTrue(CurfewLease.parse(body(active = "true"), "test", 10000).blocked(10000))
+    }
+
+    @Test fun expiredActiveObservationDoesNotBlock() {
+        val lease = CurfewLease.parse(body(active = "true"), "test", 10000)
+        assertTrue(lease.blocked(15999))
+        assertFalse(lease.blocked(16000))
+    }
+
+    @Test fun unknownStatusDoesNotBlock() {
+        val lease: CurfewLease? = null
+        assertFalse(lease?.blocked(10000) == true)
     }
 
     @Test fun earlyReleaseReplacesActiveLease() {
@@ -26,10 +37,18 @@ class CurfewLeaseTest {
         assertFalse(lease.blocked(10003))
     }
 
-    @Test fun invalidResponsesCannotUnlock() {
-        val invalid = listOf(body(available = "false"), body(active = "\"false\""),
+    @Test fun invalidResponsesCannotTriggerAKick() {
+        val invalid = listOf(body(available = "false"), body(active = "true", available = "false"),
+            body(active = "\"false\""),
             body(ttl = 0), body(ttl = 6001), body().replace("curfew/1", "curfew/2"),
             body().replace("test", "stale-nonce"), "{}", "not-json")
         invalid.forEach { assertTrue(runCatching { CurfewLease.parse(it, "test", 10000) }.isFailure) }
+    }
+
+    @Test fun resumedCurfewBlocksAfterEarlyRelease() {
+        var lease = CurfewLease.parse(body(), "test", 10000)
+        assertFalse(lease.blocked(10001))
+        lease = CurfewLease.parse(body(active = "true"), "test", 10002)
+        assertTrue(lease.blocked(10003))
     }
 }

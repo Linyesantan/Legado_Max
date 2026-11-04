@@ -3,9 +3,9 @@ package io.legado.app.help.curfew
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 
-/** A short lease measured only by the device's monotonic clock, never wall time. */
+/** Only a fresh, explicitly active observation can trigger a kick. */
 data class CurfewLease(val active: Boolean, val expiresAt: Long, val revision: String) {
-    fun blocked(now: Long) = active || now >= expiresAt
+    fun blocked(now: Long) = active && now < expiresAt
 
     companion object {
         fun parse(body: String, nonce: String, receivedAt: Long): CurfewLease {

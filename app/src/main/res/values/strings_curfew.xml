@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="curfew_checking">正在核验宵禁状态</string>
-    <string name="curfew_active">宵禁中</string>
-    <string name="curfew_unavailable">无法核验宵禁状态</string>
-    <string name="curfew_exit">退出</string>
-</resources>

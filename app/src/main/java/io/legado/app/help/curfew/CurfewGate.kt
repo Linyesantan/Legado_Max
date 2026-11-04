@@ -2,21 +2,11 @@ package io.legado.app.help.curfew
 
 import android.app.Activity
 import android.app.Application
-import android.app.Dialog
-import android.content.Intent
-import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.view.Gravity
-import android.view.ViewGroup
-import android.view.WindowManager
-import android.widget.ImageButton
-import android.widget.LinearLayout
-import android.widget.TextView
 import io.legado.app.BuildConfig
-import io.legado.app.R
 import io.legado.app.model.ReadAloud
 import io.legado.app.service.BaseReadAloudService
 import kotlinx.coroutines.CoroutineScope
@@ -28,7 +18,6 @@ import okhttp3.Call
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.util.IdentityHashMap
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -38,16 +27,12 @@ object CurfewGate : Application.ActivityLifecycleCallbacks {
     private val main = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val epoch = AtomicLong()
-    private val screens = IdentityHashMap<Activity, Pair<Dialog, TextView>>()
+    private val activities = mutableSetOf<Activity>()
     private val started = mutableSetOf<Activity>()
-    private var foreground: Activity? = null
-    private var lockActivity: CurfewLockActivity? = null
-    private var launchingLock = false
     @Volatile private var lease: CurfewLease? = null
     @Volatile private var call: Call? = null
-    private var checking = true
 
-    fun blocked() = enabled && lease?.blocked(SystemClock.elapsedRealtime()) != false
+    fun blocked() = enabled && lease?.blocked(SystemClock.elapsedRealtime()) == true
 
     fun init(app: Application) {
         if (!enabled) return
@@ -74,8 +59,7 @@ object CurfewGate : Application.ActivityLifecycleCallbacks {
                     main.post {
                         if (requestEpoch == epoch.get()) {
                             lease = value
-                            checking = false
-                            updateScreens(app)
+                            if (blocked()) kick(app)
                         }
                     }
                     // Let the main thread publish the revision before the next long poll.
@@ -84,111 +68,43 @@ object CurfewGate : Application.ActivityLifecycleCallbacks {
                     main.post {
                         if (requestEpoch == epoch.get()) {
                             lease = null
-                            checking = false
-                            updateScreens(app)
                         }
                     }
                     delay(1000)
                 }
             }
         }
-        main.post(object : Runnable {
-            override fun run() {
-                updateScreens(app)
-                main.postDelayed(this, 250)
-            }
-        })
     }
 
-    private fun updateScreens(app: Application) {
-        val blocked = blocked()
-        if (blocked && BaseReadAloudService.isRun) ReadAloud.stop(app)
-        val message = when {
-            checking -> R.string.curfew_checking
-            lease?.active == true -> R.string.curfew_active
-            else -> R.string.curfew_unavailable
-        }
-        lockActivity?.let {
-            if (blocked) it.updateMessage(message) else if (!it.isFinishing) it.finish()
-        }
-        screens.forEach { (activity, screen) ->
+    private fun kick(app: Application) {
+        if (BaseReadAloudService.isRun) ReadAloud.stop(app)
+        // Close the task, but keep synchronization alive for an early release.
+        activities.toList().forEach { activity ->
             if (!activity.isFinishing && !activity.isDestroyed) {
-                if (blocked) {
-                    screen.second.setText(message)
-                    if (!screen.first.isShowing) screen.first.show()
-                    screen.first.window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-                } else if (screen.first.isShowing) screen.first.dismiss()
+                activity.finishAndRemoveTask()
             }
-        }
-        val activity = foreground
-        if (blocked && activity != null && activity !is CurfewLockActivity &&
-            !activity.isFinishing && !activity.isDestroyed && !launchingLock) {
-            // Pausing the reader also prevents its dialogs from covering the gate.
-            launchingLock = true
-            activity.startActivity(Intent(activity, CurfewLockActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            })
         }
     }
 
     override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
-        if (activity is CurfewLockActivity) {
-            lockActivity = activity
-            launchingLock = false
-            return
-        }
-        val label = TextView(activity).apply {
-            textSize = 22f
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-        }
-        val layout = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setBackgroundColor(Color.rgb(25, 29, 28))
-            addView(label, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-            addView(ImageButton(activity).apply {
-                setImageResource(android.R.drawable.ic_menu_close_clear_cancel)
-                contentDescription = activity.getString(R.string.curfew_exit)
-                setOnClickListener { activity.moveTaskToBack(true) }
-            })
-        }
-        val dialog = Dialog(activity, android.R.style.Theme_Material_NoActionBar).apply {
-            setContentView(layout)
-            setCancelable(false)
-            setCanceledOnTouchOutside(false)
-            window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        }
-        // Protect task-switcher previews even when the normal reading screen is visible.
-        activity.window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        screens[activity] = dialog to label
-        updateScreens(activity.application)
+        activities.add(activity)
     }
 
     override fun onActivityStarted(activity: Activity) {
         if (started.isEmpty()) {
             epoch.incrementAndGet()
             lease = null
-            checking = true
             call?.cancel()
         }
         started.add(activity)
-        updateScreens(activity.application)
     }
 
-    override fun onActivityResumed(activity: Activity) {
-        foreground = activity
-        updateScreens(activity.application)
-    }
+    override fun onActivityResumed(activity: Activity) = Unit
     override fun onActivityStopped(activity: Activity) { started.remove(activity) }
     override fun onActivityDestroyed(activity: Activity) {
         started.remove(activity)
-        if (foreground === activity) foreground = null
-        if (lockActivity === activity) lockActivity = null
-        screens.remove(activity)?.first?.dismiss()
+        activities.remove(activity)
     }
-    override fun onActivityPaused(activity: Activity) {
-        if (foreground === activity) foreground = null
-    }
+    override fun onActivityPaused(activity: Activity) = Unit
     override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
 }
