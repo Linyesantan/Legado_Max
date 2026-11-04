@@ -50,7 +50,6 @@ STATE_ROOT = os.environ.get("NOVEL_STATE_ROOT") or None
 # 改稿接口与书源共用端口；增量写入和历史由独立模块处理。
 sys.path.insert(0, os.environ.get('NOVEL_ROUNDTRIP_LIB', str(Path(__file__).resolve().parent.parent)))
 from manuscript_api import handle as handle_manuscript
-from curfew_api import handle as handle_curfew
 
 CHAP_RE = re.compile(r"^第\s*(\d+)\s*章")
 INTRO_HINT = re.compile(r"^(#\s*)?(内容简介|简介|作品简介|大纲)")
@@ -525,8 +524,6 @@ class Handler(BaseHTTPRequestHandler):
         return bool(EDIT_TOKEN) and hmac.compare_digest(str(given or ""), EDIT_TOKEN)
 
     def do_GET(self):
-        if handle_curfew(self):
-            return
         parsed = urlparse(self.path)
         path = unquote(parsed.path).rstrip("/") or "/"
         if path.startswith("/novel/"):

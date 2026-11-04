@@ -45,7 +45,6 @@ import io.legado.app.help.book.readSimulating
 import io.legado.app.help.book.simulatedTotalChapterNum
 import io.legado.app.help.book.update
 import io.legado.app.help.MediaHelp
-import io.legado.app.help.curfew.CurfewGate
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.glide.ImageLoader
@@ -575,10 +574,6 @@ abstract class BaseReadAloudService : BaseService(),
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (CurfewGate.blocked()) {
-            stopReadAloud()
-            return START_NOT_STICKY
-        }
         when (intent?.action) {
             IntentAction.play -> newReadAloud(
                 intent.getBooleanExtra("play", true),
@@ -613,10 +608,6 @@ abstract class BaseReadAloudService : BaseService(),
     }
 
     private fun newReadAloud(play: Boolean, pageIndex: Int, startPos: Int) {
-        if (CurfewGate.blocked()) {
-            stopReadAloud()
-            return
-        }
         execute(executeContext = IO) {
             captureSessionFromForeground()
             textChapter = ReadBook.curTextChapter ?: textChapter

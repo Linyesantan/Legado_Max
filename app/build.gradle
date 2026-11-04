@@ -28,10 +28,6 @@ static def releaseCode() {
 def name = "legado"
 def version = "3." + releaseTime()
 def gitCommits = 0
-def curfewStatusUrl = System.getenv('CURFEW_STATUS_URL') ?: project.findProperty('CURFEW_STATUS_URL') ?: ''
-if (curfewStatusUrl && !curfewStatusUrl.startsWith('https://')) {
-    throw new GradleException('CURFEW_STATUS_URL must use HTTPS')
-}
 def bundledReleaseStoreFile = rootProject.file(".github/workflows/legado.jks")
 def resolvedReleaseStoreFile = project.findProperty("RELEASE_STORE_FILE") ? file(project.property("RELEASE_STORE_FILE")) : (bundledReleaseStoreFile.exists() ? bundledReleaseStoreFile : null)
 def resolvedReleaseKeyAlias = project.findProperty("RELEASE_KEY_ALIAS") ?: "legado"
@@ -82,7 +78,6 @@ android {
 
         buildConfigField "String", "Cronet_Version", "\"$CronetVersion\""
         buildConfigField "String", "Cronet_Main_Version", "\"$CronetMainVersion\""
-        buildConfigField "String", "CURFEW_STATUS_URL", groovy.json.JsonOutput.toJson(curfewStatusUrl)
 
         javaCompileOptions {
             annotationProcessorOptions {
